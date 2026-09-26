@@ -52,6 +52,9 @@ fn backup_entry_from(entry: &config::WalletEntry) -> WalletBackupEntry {
         network: entry.network.clone(),
         created_at: entry.created_at.clone(),
         funded: entry.funded,
+        derivation_index: entry.derivation_index,
+        derivation_path: entry.derivation_path.clone(),
+        mnemonic_wallet: entry.mnemonic_wallet.clone(),
     }
 }
 
@@ -235,6 +238,9 @@ pub enum WalletCommands {
         /// HD derivation path when importing from hardware
         #[arg(long, default_value = hardware_wallet::STELLAR_HD_PATH)]
         hd_path: String,
+        /// Comma-separated account_name:index specs for batch recovery from mnemonic (e.g. deployer:0,admin:1)
+        #[arg(long)]
+        accounts: Option<String>,
     },
     /// Reconstruct a wallet backup from recovery shares
     ImportShares {
@@ -298,8 +304,30 @@ pub enum WalletCommands {
         #[arg(long, default_value = "false")]
         use_global: bool,
     },
-    /// Derive all 10 Stellar addresses (m/44'/148'/0..9') from a BIP39 recovery phrase
-    Derive,
+    /// Derive Stellar accounts (m/44'/148'/N') from a BIP39 recovery phrase
+    Derive {
+        /// Name of a saved mnemonic wallet or source label to derive from
+        #[arg(long)]
+        mnemonic_wallet: Option<String>,
+        /// Account index N for SEP-5 path m/44'/148'/N'
+        #[arg(long, short = 'i')]
+        index: Option<u32>,
+        /// Friendly name for the newly derived account
+        #[arg(long, short = 'n')]
+        name: Option<String>,
+        /// Network to associate with this wallet (overrides global config)
+        #[arg(long, value_parser = ["testnet", "mainnet"])]
+        network: Option<String>,
+        /// Encrypt the secret key with a passphrase at rest
+        #[arg(long, default_value = "false")]
+        encrypt: bool,
+        /// Reject passphrases that score below "Strong" (requires --encrypt)
+        #[arg(long, default_value = "false", requires = "encrypt")]
+        strict: bool,
+        /// Fund derived wallet via faucet after creation (testnet)
+        #[arg(long, default_value = "false")]
+        fund: bool,
+    },
     /// Multi-signature account management
     #[command(subcommand)]
     Multisig(MultisigCommands),
@@ -467,6 +495,7 @@ pub async fn handle(cmd: WalletCommands) -> Result<()> {
             strict,
             hardware,
             hd_path,
+            accounts,
         } => import_wallet(
             name,
             file,
@@ -479,7 +508,8 @@ pub async fn handle(cmd: WalletCommands) -> Result<()> {
             strict,
             hardware,
             hd_path,
-        ),
+            accounts,
+        ).await,
         WalletCommands::ImportShares { shares, output } => import_shares(shares, output),
         WalletCommands::Connect { device, timeout } => connect_hardware(device, &timeout),
         WalletCommands::HwAddress { device, path } => hw_address(device, &path),
@@ -489,7 +519,15 @@ pub async fn handle(cmd: WalletCommands) -> Result<()> {
             message,
             hardware,
         } => sign_message(name, message, hardware),
-        WalletCommands::Derive => derive_addresses(),
+        WalletCommands::Derive {
+            mnemonic_wallet,
+            index,
+            name,
+            network,
+            encrypt,
+            strict,
+            fund,
+        } => derive_account(mnemonic_wallet, index, name, network, encrypt, strict, fund).await,
         WalletCommands::TuneKdf {
             name,
             mem,
@@ -892,6 +930,12 @@ fn list(json: bool) -> Result<()> {
             network: String,
             funded: bool,
             created_at: String,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            derivation_index: Option<u32>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            derivation_path: Option<String>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            mnemonic_wallet: Option<String>,
         }
 
         let wallets: Vec<WalletSummary> = cfg
@@ -903,6 +947,9 @@ fn list(json: bool) -> Result<()> {
                 network: w.network.clone(),
                 funded: w.funded,
                 created_at: w.created_at.clone(),
+                derivation_index: w.derivation_index,
+                derivation_path: w.derivation_path.clone(),
+                mnemonic_wallet: w.mnemonic_wallet.clone(),
             })
             .collect();
 
@@ -935,6 +982,12 @@ fn list(json: bool) -> Result<()> {
         println!("  {:>2}. {} [{}]", i + 1, w.name.bold(), status);
         p::kv("Key", &w.public_key);
         p::kv("Net", &w.network);
+        if let Some(idx) = w.derivation_index {
+            p::kv("Index", &idx.to_string());
+        }
+        if let Some(path) = &w.derivation_path {
+            p::kv("Path", path);
+        }
 
         if i < cfg.wallets.len() - 1 {
             println!();
@@ -2123,7 +2176,14 @@ fn import_wallet(
     strict: bool,
     hardware: Option<hardware_wallet::HardwareWalletKind>,
     hd_path: String,
+    accounts: Option<String>,
 ) -> Result<()> {
+    if let Some(accounts_spec) = accounts {
+        if from_mnemonic {
+            return batch_import_from_mnemonic(accounts_spec, network_override, encrypt, strict);
+        }
+    }
+
     if let Some(identity) = from_stellar_cli {
         return import_from_stellar_cli(identity, name, account_index, network_override, encrypt);
     }
@@ -2159,6 +2219,86 @@ fn import_wallet(
         )
     })?;
     import_wallets(file)
+}
+
+fn batch_import_from_mnemonic(
+    accounts_spec: String,
+    network_override: Option<String>,
+    encrypt: bool,
+    strict: bool,
+) -> Result<()> {
+    p::header("Batch Importing Derived Wallets from Recovery Phrase");
+    let phrase = prompt_recovery_phrase()?;
+    let mut cfg = config::load()?;
+    let network = network_override.unwrap_or_else(|| cfg.network.clone());
+
+    let parts: Vec<&str> = accounts_spec
+        .split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if parts.is_empty() {
+        anyhow::bail!("No valid account specifications provided in --accounts");
+    }
+
+    for part in &parts {
+        let (acct_name, idx_str) = part.split_once(':').ok_or_else(|| {
+            anyhow::anyhow!(
+                "Invalid account specification '{}', expected name:index (e.g. deployer:0)",
+                part
+            )
+        })?;
+        let acct_name = acct_name.trim();
+        let idx: u32 = idx_str.trim().parse().map_err(|_| {
+            anyhow::anyhow!("Invalid account index in '{}'", part)
+        })?;
+        config::validate_wallet_name(acct_name)?;
+        if cfg.wallets.iter().any(|w| w.name == acct_name) {
+            anyhow::bail!("A wallet named '{}' already exists.", acct_name);
+        }
+
+        let (public_key, secret_key) = mnemonic::keypair_from_phrase(&phrase, "", idx)?;
+        let path_str = format!("m/44'/148'/{}'", idx);
+
+        let secret_to_store = if encrypt {
+            let context = [acct_name, public_key.as_str(), network.as_str()];
+            let pwd = crypto::prompt_passphrase_with_inputs(
+                &format!("Set a passphrase to encrypt wallet '{}'", acct_name),
+                strict,
+                &context,
+            )?;
+            crypto::encrypt_secret(&pwd, &secret_key, None)?
+        } else {
+            secret_key.to_string()
+        };
+
+        let kdf = if encrypt {
+            kdf_options(None, None, None, cfg.wallet_encryption.as_ref())
+        } else {
+            None
+        };
+
+        cfg.wallets.push(config::WalletEntry {
+            name: acct_name.to_string(),
+            public_key,
+            secret_key: Some(secret_to_store),
+            network: network.clone(),
+            created_at: Utc::now().to_rfc3339(),
+            funded: false,
+            kdf_options: kdf,
+            rotation_history: Vec::new(),
+            derivation_index: Some(idx),
+            derivation_path: Some(path_str),
+            mnemonic_wallet: None,
+        });
+        p::success(&format!(
+            "Imported derived wallet '{}' (index {})",
+            acct_name, idx
+        ));
+    }
+
+    config::save(&cfg)?;
+    Ok(())
 }
 
 fn import_from_stellar_cli(
@@ -2214,6 +2354,9 @@ fn import_from_hardware(
         funded: false,
         kdf_options: None,
         rotation_history: vec![],
+        derivation_index: None,
+        derivation_path: None,
+        mnemonic_wallet: None,
     });
     config::save(&updated_cfg)?;
 
@@ -2245,6 +2388,7 @@ fn import_from_mnemonic(
 
     let phrase = prompt_recovery_phrase()?;
     let (public_key, secret_key) = mnemonic::keypair_from_phrase(&phrase, "", account_index)?;
+    let path_str = format!("m/44'/148'/{}'", account_index);
 
     println!();
     p::kv_accent("Public Key", &public_key);
@@ -2276,6 +2420,9 @@ fn import_from_mnemonic(
         funded: false,
         kdf_options: kdf,
         rotation_history: Vec::new(),
+        derivation_index: Some(account_index),
+        derivation_path: Some(path_str),
+        mnemonic_wallet: None,
     });
 
     config::save(&cfg)?;
@@ -2408,6 +2555,9 @@ fn import_wallets(file: PathBuf) -> Result<()> {
             funded: wallet.funded,
             kdf_options,
             rotation_history: Vec::new(),
+            derivation_index: wallet.derivation_index,
+            derivation_path: wallet.derivation_path,
+            mnemonic_wallet: wallet.mnemonic_wallet,
         });
     }
 
@@ -2562,6 +2712,9 @@ mod tests {
             funded: true,
             rotation_history: vec![],
             kdf_options: None,
+            derivation_index: None,
+            derivation_path: None,
+            mnemonic_wallet: None,
         }
     }
 
@@ -2637,6 +2790,125 @@ mod tests {
         assert!(json.contains("previous_secret_key"));
         assert!(json.contains("SKEY"));
     }
+
+    #[test]
+    fn wallet_entry_derivation_metadata_serialization() {
+        let mut wallet = make_wallet("deployer", "GABC");
+        wallet.derivation_index = Some(2);
+        wallet.derivation_path = Some("m/44'/148'/2'".to_string());
+        wallet.mnemonic_wallet = Some("main_mnemonic".to_string());
+
+        let json = serde_json::to_string(&wallet).unwrap();
+        assert!(json.contains("\"derivation_index\":2"));
+        assert!(json.contains("\"derivation_path\":\"m/44'/148'/2'\""));
+        assert!(json.contains("\"mnemonic_wallet\":\"main_mnemonic\""));
+
+        let deserialized: WalletEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.derivation_index, Some(2));
+        assert_eq!(deserialized.derivation_path.as_deref(), Some("m/44'/148'/2'"));
+        assert_eq!(deserialized.mnemonic_wallet.as_deref(), Some("main_mnemonic"));
+    }
+}
+
+async fn derive_account(
+    mnemonic_wallet: Option<String>,
+    index: Option<u32>,
+    name: Option<String>,
+    network_override: Option<String>,
+    encrypt: bool,
+    strict: bool,
+    fund: bool,
+) -> Result<()> {
+    if mnemonic_wallet.is_none() && index.is_none() && name.is_none() {
+        return derive_addresses();
+    }
+
+    let target_name = name.ok_or_else(|| {
+        anyhow::anyhow!("--name <DERIVED_WALLET_NAME> is required when deriving an account")
+    })?;
+    let target_index = index.ok_or_else(|| {
+        anyhow::anyhow!("--index <N> is required when deriving an account")
+    })?;
+    let source_wallet = mnemonic_wallet.unwrap_or_else(|| "mnemonic".to_string());
+
+    let mut cfg = config::load()?;
+    config::validate_wallet_name(&target_name)?;
+
+    if cfg.wallets.iter().any(|w| w.name == target_name) {
+        anyhow::bail!("A wallet named '{}' already exists.", target_name);
+    }
+
+    let network = network_override.unwrap_or_else(|| cfg.network.clone());
+    p::header(&format!(
+        "Deriving wallet '{}' (index {}) from mnemonic",
+        target_name, target_index
+    ));
+
+    let phrase = prompt_recovery_phrase()?;
+    let (public_key, secret_key) = mnemonic::keypair_from_phrase(&phrase, "", target_index)?;
+    let path_str = format!("m/44'/148'/{}'", target_index);
+
+    println!();
+    p::kv_accent("Public Key", &public_key);
+    p::kv("Derivation Path", &path_str);
+
+    let secret_to_store = if encrypt {
+        println!();
+        let context = [target_name.as_str(), public_key.as_str(), network.as_str()];
+        let pwd = crypto::prompt_passphrase_with_inputs(
+            &format!("Set a passphrase to encrypt derived wallet '{}'", target_name),
+            strict,
+            &context,
+        )?;
+        crypto::encrypt_secret(&pwd, &secret_key, None)?
+    } else {
+        secret_key.to_string()
+    };
+
+    let kdf = if encrypt {
+        kdf_options(None, None, None, cfg.wallet_encryption.as_ref())
+    } else {
+        None
+    };
+
+    let mut new_wallet = config::WalletEntry {
+        name: target_name.clone(),
+        public_key: public_key.clone(),
+        secret_key: Some(secret_to_store),
+        network: network.clone(),
+        created_at: Utc::now().to_rfc3339(),
+        funded: false,
+        kdf_options: kdf,
+        rotation_history: Vec::new(),
+        derivation_index: Some(target_index),
+        derivation_path: Some(path_str),
+        mnemonic_wallet: Some(source_wallet),
+    };
+
+    if fund {
+        let net_cfg = config::get_network_config(&cfg, &network)?;
+        if net_cfg.friendbot_url.is_none() && network == "mainnet" {
+            p::warn("Friendbot is not available on Mainnet. Skipping fund step.");
+        } else {
+            p::step(1, 1, "Funding derived account via network faucet…");
+            match horizon::fund_account(&public_key, &network).await {
+                Ok(_) => {
+                    new_wallet.funded = true;
+                    p::success("Account funded via configured faucet");
+                }
+                Err(e) => p::warn(&format!("Funding failed: {}", e)),
+            }
+        }
+    }
+
+    cfg.wallets.push(new_wallet);
+    config::save(&cfg)?;
+
+    p::success(&format!(
+        "Derived wallet '{}' (index {}) saved successfully!",
+        target_name, target_index
+    ));
+    Ok(())
 }
 
 fn derive_addresses() -> Result<()> {
