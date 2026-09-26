@@ -713,6 +713,12 @@ pub struct WalletEntry {
     pub kdf_options: Option<crypto::KdfOptions>,
     #[serde(default)]
     pub rotation_history: Vec<WalletRotationRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub derivation_index: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub derivation_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mnemonic_wallet: Option<String>,
 }
 
 impl WalletEntry {

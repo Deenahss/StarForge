@@ -230,6 +230,12 @@ pub struct WalletBackupEntry {
     pub network: String,
     pub created_at: String,
     pub funded: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub derivation_index: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub derivation_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mnemonic_wallet: Option<String>,
 }
 
 /// A parsed backup plus any non-fatal observations about it.
