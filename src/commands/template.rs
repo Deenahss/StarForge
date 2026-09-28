@@ -1,6 +1,9 @@
 use crate::utils::template_integration;
 use crate::utils::template_performance;
 use crate::utils::template_provenance;
+use crate::utils::template_security_scanner::{
+    scan_template_security, ScanLevel, TemplateSecurityScannerConfig,
+};
 use crate::utils::{output, print as p, template_customization_ai, templates};
 use anyhow::{Context, Result};
 use clap::Subcommand;
@@ -245,16 +248,33 @@ pub enum TemplateCommands {
         /// Optional index to rollback to (0 is oldest, omit for previous)
         index: Option<usize>,
     },
+    /// Manage the local offline template cache
+    Cache {
+        #[command(subcommand)]
+        command: TemplateCacheCommands,
+    },
+}
 
-    // ── Commands moved under `template` by ADR 0007 ─────────────────────────
-    // Each moved command keeps its own argument struct, so no flag definition
-    // is duplicated here; `handle` forwards to the owning module.
-    /// Template version control (versioning, branching, changelog)
-    #[command(subcommand)]
-    Vcs(crate::commands::template_vcs::TemplateVcsCommands),
-    /// Interact with the remote template registry
-    #[command(subcommand)]
-    Registry(crate::commands::registry::RegistryCommands),
+#[derive(Subcommand)]
+pub enum TemplateCacheCommands {
+    /// List cached templates and their integrity status
+    List {
+        /// Emit machine-readable JSON output
+        #[arg(long)]
+        json: bool,
+    },
+    /// Clear templates from the local cache
+    Clear {
+        /// Specific template name to clear
+        #[arg(long)]
+        name: Option<String>,
+        /// Clear all cached templates
+        #[arg(long, conflicts_with = "name")]
+        all: bool,
+        /// Force removal without prompting
+        #[arg(long, short)]
+        force: bool,
+    },
 }
 
 pub async fn handle(cmd: TemplateCommands) -> Result<()> {
@@ -374,10 +394,128 @@ pub async fn handle(cmd: TemplateCommands) -> Result<()> {
         TemplateCommands::CustomizeRollback { path, index } => {
             template_customize_rollback(path, index).await
         }
-        // ADR 0007: forward the commands that moved under `template`.
-        TemplateCommands::Vcs(cmd) => crate::commands::template_vcs::handle(cmd).await,
-        TemplateCommands::Registry(cmd) => crate::commands::registry::handle(cmd).await,
+        TemplateCommands::Cache { command } => handle_cache(command).await,
     }
+}
+
+async fn handle_cache(cmd: TemplateCacheCommands) -> Result<()> {
+    match cmd {
+        TemplateCacheCommands::List { json } => cache_list(json),
+        TemplateCacheCommands::Clear { name, all, force } => cache_clear(name, all, force),
+    }
+}
+
+fn cache_list(json: bool) -> Result<()> {
+    let cached = templates::list_cached_templates()?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&cached)?);
+        return Ok(());
+    }
+
+    p::header("StarForge Local Template Cache");
+    let cache_dir = templates::template_cache_dir()?;
+    p::kv("Location", &cache_dir.display().to_string());
+    p::kv("Total templates", &cached.len().to_string());
+    p::separator();
+
+    if cached.is_empty() {
+        p::info("Cache is empty. Templates will be cached here when fetched or scaffolded.");
+        return Ok(());
+    }
+
+    let mut table = comfy_table::Table::new();
+    table.set_header(vec![
+        "Template",
+        "Version",
+        "Status",
+        "Digest",
+        "Cached At",
+        "Size",
+    ]);
+
+    for item in &cached {
+        let status_str = if item.is_valid {
+            "Valid".green().to_string()
+        } else {
+            let err = item
+                .verification_error
+                .as_deref()
+                .unwrap_or("Corrupted / Tampered");
+            format!("Tampered ({})", err).red().to_string()
+        };
+
+        let digest_short = if item.digest.len() >= 12 {
+            &item.digest[..12]
+        } else {
+            &item.digest
+        };
+
+        let size_str = format_cache_bytes(item.size_bytes);
+
+        table.add_row(vec![
+            item.name.clone(),
+            item.version.clone(),
+            status_str,
+            digest_short.to_string(),
+            item.cached_at.chars().take(19).collect::<String>(),
+            size_str,
+        ]);
+    }
+
+    println!("{table}");
+    Ok(())
+}
+
+fn format_cache_bytes(bytes: u64) -> String {
+    if bytes < 1024 {
+        format!("{} B", bytes)
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    }
+}
+
+fn cache_clear(name: Option<String>, all: bool, force: bool) -> Result<()> {
+    if name.is_none() && !all {
+        anyhow::bail!(
+            "Specify a template name with `--name <NAME>` or use `--all` to clear the entire cache."
+        );
+    }
+
+    let target_name = name.as_deref();
+    if !force {
+        let prompt = if let Some(n) = target_name {
+            format!("Remove cached template '{}'?", n)
+        } else {
+            "Clear all cached templates?".to_string()
+        };
+
+        if !dialoguer::Confirm::new()
+            .with_prompt(prompt)
+            .default(false)
+            .interact()?
+        {
+            p::info("Operation cancelled.");
+            return Ok(());
+        }
+    }
+
+    let count = templates::clear_cached_template(target_name)?;
+    if count == 0 {
+        if let Some(n) = target_name {
+            p::warn(&format!("No cache entry found for '{}'.", n));
+        } else {
+            p::info("Template cache was already empty.");
+        }
+    } else if let Some(n) = target_name {
+        p::success(&format!("Cleared cached template '{}'.", n));
+    } else {
+        p::success(&format!("Cleared {} cached template(s).", count));
+    }
+
+    Ok(())
 }
 
 // Not currently called from any code path in this crate. Kept rather than
@@ -692,9 +830,9 @@ async fn list(json: bool, limit: Option<usize>, cursor: Option<String>) -> Resul
     for (i, template) in shown.iter().enumerate() {
         let compat_badge = match check_template_compatibility(template) {
             CompatibilityStatus::Compatible => "[COMPATIBLE]",
-            CompatibilityStatus::TooOld { .. } | CompatibilityStatus::TooNew { .. } => {
-                "[INCOMPATIBLE]"
-            }
+            CompatibilityStatus::TooOld { .. }
+            | CompatibilityStatus::TooNew { .. }
+            | CompatibilityStatus::SorobanSdkIncompatible { .. } => "[INCOMPATIBLE]",
             CompatibilityStatus::MalformedMetadata { .. } => "[BAD-META]",
         };
         let mut badges = template.trust_indicators();
@@ -817,9 +955,9 @@ async fn search(
         let template = &result.entry;
         let compat_badge = match check_template_compatibility(template) {
             CompatibilityStatus::Compatible => "[COMPATIBLE]",
-            CompatibilityStatus::TooOld { .. } | CompatibilityStatus::TooNew { .. } => {
-                "[INCOMPATIBLE]"
-            }
+            CompatibilityStatus::TooOld { .. }
+            | CompatibilityStatus::TooNew { .. }
+            | CompatibilityStatus::SorobanSdkIncompatible { .. } => "[INCOMPATIBLE]",
             CompatibilityStatus::MalformedMetadata { .. } => "[BAD-META]",
         };
         let mut badges = template.trust_indicators();
@@ -914,6 +1052,22 @@ async fn show(name: String) -> Result<()> {
         CompatibilityStatus::MalformedMetadata { reason } => {
             p::warn(&format!("Malformed version metadata: {}", reason));
         }
+        CompatibilityStatus::SorobanSdkIncompatible {
+            sdk_min,
+            sdk_max,
+            found_version,
+        } => {
+            let range = match (sdk_min, sdk_max) {
+                (Some(min), Some(max)) => format!(">= {} and <= {}", min, max),
+                (Some(min), None) => format!(">= {}", min),
+                (None, Some(max)) => format!("<= {}", max),
+                (None, None) => "compatible".to_string(),
+            };
+            p::warn(&format!(
+                "Incompatible: requires Soroban SDK {} (running {})",
+                range, found_version
+            ));
+        }
     }
     print_quality_signals(&template);
     Ok(())
@@ -973,9 +1127,11 @@ fn template_lint(path: PathBuf) -> Result<()> {
     }
 
     let metadata = std::fs::read_to_string(&metadata_path)?;
-    let value = crate::utils::template_schema::parse_json(&metadata)
+    let origin_str = metadata_path.display().to_string();
+    let value = crate::utils::template_schema::parse_json(&metadata, &origin_str)
         .map_err(|e| anyhow::anyhow!("Invalid template.json: {}", e))?;
-    crate::utils::template_schema::validate_template_entry(&value, &metadata_path.display().to_string())
+    crate::utils::template_schema::validate_template_entry(&value, &origin_str)
+        .into_result()
         .map_err(|e| anyhow::anyhow!("Schema validation failed: {}", e))?;
 
     p::success("Schema checks passed");
@@ -1280,6 +1436,22 @@ async fn info(name: String) -> Result<()> {
         )),
         CompatibilityStatus::MalformedMetadata { reason } => {
             p::warn(&format!("Malformed version metadata: {}", reason))
+        }
+        CompatibilityStatus::SorobanSdkIncompatible {
+            sdk_min,
+            sdk_max,
+            found_version,
+        } => {
+            let range = match (sdk_min, sdk_max) {
+                (Some(min), Some(max)) => format!(">= {} and <= {}", min, max),
+                (Some(min), None) => format!(">= {}", min),
+                (None, Some(max)) => format!("<= {}", max),
+                (None, None) => "compatible".to_string(),
+            };
+            p::warn(&format!(
+                "Incompatible: requires Soroban SDK {} (running {})",
+                range, found_version
+            ))
         }
     }
 
