@@ -39,6 +39,23 @@ pub enum ConfigCommands {
     /// SQLite database management (init, migrate, query, backup, restore, export)
     #[command(subcommand)]
     Db(DbCommands),
+
+    // ── Commands moved under `config` by ADR 0007 ────────────────────────
+    // Each moved command keeps its own argument struct, so no flag definition
+    // is duplicated here; `handle` forwards to the owning module.
+    /// Show starforge config and environment info
+    Info,
+    /// Manage telemetry settings directly
+    #[command(subcommand)]
+    Telemetry(crate::commands::telemetry::TelemetryCommands),
+    /// Manage feature flags for AI features (rollouts, A/B tests, rollback)
+    Flags {
+        #[command(flatten)]
+        args: crate::commands::feature_flags_cmd::FeatureFlagsArgs,
+    },
+    /// Privacy protection, anonymization, consent, and reporting
+    #[command(subcommand)]
+    Privacy(crate::commands::privacy::PrivacyCommands),
 }
 
 #[derive(Subcommand)]
@@ -109,6 +126,11 @@ pub async fn handle(cmd: ConfigCommands) -> Result<()> {
         } => set_encryption(mem, iterations, parallelism, reset),
         ConfigCommands::Doctor => crate::commands::doctor::run().await,
         ConfigCommands::Db(cmd) => handle_db(cmd),
+        // ADR 0007: forward the commands that moved under `config`.
+        ConfigCommands::Info => crate::commands::info::handle().await,
+        ConfigCommands::Telemetry(cmd) => crate::commands::telemetry::handle(cmd).await,
+        ConfigCommands::Flags { args } => crate::commands::feature_flags_cmd::handle(args).await,
+        ConfigCommands::Privacy(cmd) => crate::commands::privacy::handle(cmd).await,
     }
 }
 

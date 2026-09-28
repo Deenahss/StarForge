@@ -49,6 +49,7 @@
 - [Dependency policy](security/dependency-policy.md)
 - [Friendbot gating](security/friendbot-gating.md)
 - [Plugin capabilities](plugins/capabilities.md)
+- [Plugin authoring cookbook](plugins/cookbook.md)
 
 # AI features
 

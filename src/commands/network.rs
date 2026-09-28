@@ -59,6 +59,19 @@ pub enum NetworkCommands {
         /// New network name
         new_name: String,
     },
+
+    // ── Commands moved under `network` by ADR 0007 ───────────────────────
+    // Each moved command keeps its own argument struct, so no flag definition
+    // is duplicated here; `handle` forwards to the owning module.
+    /// Local Soroban devnet (Docker quickstart)
+    #[command(subcommand)]
+    Node(crate::commands::node::NodeCommands),
+    /// Local network simulation and testing environment
+    #[command(subcommand)]
+    Simulate(crate::commands::simulate::SimulateCommands),
+    /// Create and manage deterministic live-ledger snapshots for local tests
+    #[command(subcommand)]
+    Snapshot(crate::commands::snapshot::SnapshotCommands),
 }
 
 pub async fn handle(cmd: NetworkCommands) -> Result<()> {
@@ -86,6 +99,10 @@ pub async fn handle(cmd: NetworkCommands) -> Result<()> {
         NetworkCommands::Test { network, json } => test_network(network, json).await,
         NetworkCommands::Remove { name } => remove_network(name),
         NetworkCommands::Rename { old_name, new_name } => rename_network(old_name, new_name),
+        // ADR 0007: forward the commands that moved under `network`.
+        NetworkCommands::Node(cmd) => crate::commands::node::handle(cmd).await,
+        NetworkCommands::Simulate(cmd) => crate::commands::simulate::handle(cmd).await,
+        NetworkCommands::Snapshot(cmd) => crate::commands::snapshot::handle(cmd).await,
     }
 }
 
