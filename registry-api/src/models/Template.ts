@@ -4,6 +4,8 @@ export interface ITemplate {
   version: string;
   description: string;
   author: string;
+  authors?: string[];
+  attribution?: string;
   tags: string[];
   // Structured functionality keywords (e.g. ["escrow", "refund", "timeout"])
   // used by search to match "find a template that does X" style queries
@@ -18,6 +20,8 @@ export interface ITemplate {
   downloads: number;
   verified: boolean;
   publisherId: string;
+  namespace?: string;
+  organizationId?: string;
   createdAt: Date;
   updatedAt: Date;
   ratings: {
@@ -148,6 +152,27 @@ export class TemplateStore {
         this.templates.set(id, {
           ...tpl,
           publisherId: newPublisherId,
+          updatedAt: new Date(),
+        });
+        count++;
+      }
+    }
+    return count;
+  }
+
+  async updateOrganizationForName(
+    name: string,
+    organizationId: string,
+    namespace: string,
+  ): Promise<number> {
+    let count = 0;
+    for (const [id, tpl] of this.templates.entries()) {
+      if (tpl.name.toLowerCase() === name.toLowerCase()) {
+        this.templates.set(id, {
+          ...tpl,
+          namespace,
+          organizationId,
+          publisherId: "organization",
           updatedAt: new Date(),
         });
         count++;

@@ -23,6 +23,7 @@
 # Deploying and operating
 
 - [Deploy policy as code](DEPLOY_POLICY.md)
+- [Post-deploy smoke tests](SMOKE_TESTS.md)
 - [Deployment checkpoints](DEPLOYMENT_CHECKPOINTS.md)
 - [Deployment scaling](DEPLOYMENT_SCALING.md)
 - [Simulation resource fees](SIMULATION_RESOURCES.md)
@@ -35,7 +36,7 @@
 
 # Networks
 
-- [SEP-10 web authentication](SEP10_AUTHENTICATION.md)
+- [SEP-10 web authentication](SEP10_AUTH.md)
 - [Custom network validation](network/custom-network-validation.md)
 - [Horizon reliability](network/horizon-reliability.md)
 - [Network health output](network/network-health.md)
@@ -49,6 +50,7 @@
 - [Dependency policy](security/dependency-policy.md)
 - [Friendbot gating](security/friendbot-gating.md)
 - [Plugin capabilities](plugins/capabilities.md)
+- [Plugin authoring cookbook](plugins/cookbook.md)
 
 # AI features
 
@@ -58,3 +60,7 @@
 # Contributors
 
 - [Cargo metadata](CARGO_METADATA.md)
+
+# Testing and CI
+
+- [Nightly end-to-end suite (testnet)](NIGHTLY_E2E.md)

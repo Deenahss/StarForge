@@ -1,4 +1,4 @@
-use crate::utils::{config, confirmation, crypto, hardware_wallet, print as p};
+use crate::utils::{audit, config, confirmation, crypto, hardware_wallet, print as p};
 use anyhow::{Context, Result};
 use base64::{engine::general_purpose, Engine as _};
 use zeroize::Zeroizing;
@@ -11,6 +11,17 @@ pub struct SigningRequest {
     pub hd_path: String,
     pub network: String,
     pub skip_confirm: bool,
+    pub wallet_name: Option<String>,
+    pub usage_policy: Option<config::WalletUsagePolicy>,
+    pub fee_stroops: Option<u64>,
+    pub target: SigningTarget,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SigningTarget {
+    Unspecified,
+    NonContract,
+    Contract(Option<String>),
 }
 
 impl SigningRequest {
@@ -32,13 +43,19 @@ impl SigningRequest {
                 .map(|w| w.public_key.as_str())
                 .unwrap_or("(derived from device)");
             prompt_hardware_confirmation(kind, public_key, network, skip_confirm, operation_label)?;
-            return Ok(Self {
+            let mut request = Self {
                 local_secret: None,
                 hardware: Some(kind),
                 hd_path,
                 network: network.to_string(),
                 skip_confirm,
-            });
+                wallet_name: None,
+                usage_policy: None,
+                fee_stroops: None,
+                target: SigningTarget::Unspecified,
+            };
+            request.attach_wallet_policy(wallet);
+            return Ok(request);
         }
 
         let wallet = wallet.ok_or_else(|| {
@@ -49,13 +66,19 @@ impl SigningRequest {
 
         enforce_mainnet_plaintext_policy(wallet, network)?;
         let secret = resolve_local_secret(wallet, &wallet.name)?;
-        Ok(Self {
+        let mut request = Self {
             local_secret: Some(secret),
             hardware: None,
             hd_path,
             network: network.to_string(),
             skip_confirm,
-        })
+            wallet_name: None,
+            usage_policy: None,
+            fee_stroops: None,
+            target: SigningTarget::Unspecified,
+        };
+        request.attach_wallet_policy(Some(wallet));
+        Ok(request)
     }
 
     pub fn local_secret(secret_key: Zeroizing<String>, network: &str) -> Self {
@@ -65,6 +88,10 @@ impl SigningRequest {
             hd_path: hardware_wallet::STELLAR_HD_PATH.to_string(),
             network: network.to_string(),
             skip_confirm: true,
+            wallet_name: None,
+            usage_policy: None,
+            fee_stroops: None,
+            target: SigningTarget::Unspecified,
         }
     }
 
@@ -83,7 +110,38 @@ impl SigningRequest {
             hd_path: hd_path.to_string(),
             network: network.to_string(),
             skip_confirm,
+            wallet_name: None,
+            usage_policy: None,
+            fee_stroops: None,
+            target: SigningTarget::Unspecified,
         })
+    }
+
+    fn attach_wallet_policy(&mut self, wallet: Option<&config::WalletEntry>) {
+        if let Some(wallet) = wallet {
+            self.wallet_name = Some(wallet.name.clone());
+            self.usage_policy = Some(wallet.usage_policy.clone());
+        }
+    }
+
+    pub fn with_fee_stroops(mut self, fee_stroops: u64) -> Self {
+        self.fee_stroops = Some(fee_stroops);
+        self
+    }
+
+    pub fn with_contract_id(mut self, contract_id: &str) -> Self {
+        self.target = SigningTarget::Contract(Some(contract_id.to_string()));
+        self
+    }
+
+    pub fn for_contract_deploy(mut self) -> Self {
+        self.target = SigningTarget::Contract(None);
+        self
+    }
+
+    pub fn for_non_contract(mut self) -> Self {
+        self.target = SigningTarget::NonContract;
+        self
     }
 }
 
@@ -223,6 +281,9 @@ pub fn resolve_local_secret(
 
 /// Sign a base64-encoded transaction XDR using local or hardware credentials.
 pub fn sign_transaction_xdr(transaction_xdr: &str, request: &SigningRequest) -> Result<String> {
+    let policy_request = request_with_envelope_fee(transaction_xdr, request);
+    enforce_wallet_policy(&policy_request)?;
+
     if let Some(kind) = request.hardware {
         let tx_bytes = decode_transaction_bytes(transaction_xdr)?;
         let passphrase = config::get_network_passphrase(&request.network);
@@ -252,6 +313,172 @@ pub fn sign_transaction_xdr(transaction_xdr: &str, request: &SigningRequest) -> 
     Ok(general_purpose::STANDARD.encode(signed_mock))
 }
 
+fn request_with_envelope_fee(transaction_xdr: &str, request: &SigningRequest) -> SigningRequest {
+    let mut policy_request = request.clone();
+    if let Ok(envelope) = crate::utils::tx_xdr::parse_envelope(transaction_xdr) {
+        policy_request.fee_stroops = Some(crate::utils::tx_xdr::summarize(&envelope).fee_stroops);
+    }
+    policy_request
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("{code}: {reason}")]
+struct WalletPolicyViolation {
+    code: &'static str,
+    reason: String,
+}
+
+fn evaluate_wallet_policy(
+    request: &SigningRequest,
+) -> std::result::Result<(), WalletPolicyViolation> {
+    let Some(policy) = request.usage_policy.as_ref() else {
+        return Ok(());
+    };
+
+    if !policy.allowed_networks.is_empty()
+        && !policy
+            .allowed_networks
+            .iter()
+            .any(|network| network.eq_ignore_ascii_case(&request.network))
+    {
+        return Err(WalletPolicyViolation {
+            code: "WALLET_POLICY_NETWORK_DENIED",
+            reason: format!(
+                "network '{}' is not in this wallet's allowlist",
+                request.network
+            ),
+        });
+    }
+
+    if let Some(max_fee) = policy.max_fee {
+        let Some(fee_stroops) = request.fee_stroops else {
+            return Err(WalletPolicyViolation {
+                code: "WALLET_POLICY_FEE_UNKNOWN",
+                reason: "transaction fee is unavailable for the configured fee cap".to_string(),
+            });
+        };
+        if fee_stroops > max_fee {
+            return Err(WalletPolicyViolation {
+                code: "WALLET_POLICY_FEE_EXCEEDED",
+                reason: format!("fee {fee_stroops} stroops exceeds cap {max_fee} stroops"),
+            });
+        }
+    }
+
+    if !policy.allowed_contracts.is_empty() {
+        match &request.target {
+            SigningTarget::NonContract => {}
+            SigningTarget::Contract(Some(contract_id)) => {
+                if !policy
+                    .allowed_contracts
+                    .iter()
+                    .any(|allowed| allowed.eq_ignore_ascii_case(contract_id))
+                {
+                    return Err(WalletPolicyViolation {
+                        code: "WALLET_POLICY_CONTRACT_DENIED",
+                        reason: format!(
+                            "contract '{}' is not in this wallet's allowlist",
+                            contract_id
+                        ),
+                    });
+                }
+            }
+            SigningTarget::Contract(None) | SigningTarget::Unspecified => {
+                return Err(WalletPolicyViolation {
+                    code: "WALLET_POLICY_CONTRACT_UNKNOWN",
+                    reason: "transaction contract is unavailable for the configured allowlist"
+                        .to_string(),
+                });
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn enforce_wallet_policy(request: &SigningRequest) -> Result<()> {
+    let Some(policy) = request.usage_policy.as_ref() else {
+        return Ok(());
+    };
+
+    if let Err(violation) = evaluate_wallet_policy(request) {
+        log_wallet_policy_violation(request, &violation)?;
+        return Err(violation.into());
+    }
+
+    if wallet_requires_confirmation(request) {
+        let wallet_name = request.wallet_name.as_deref().unwrap_or("unknown");
+        let mut summary = confirmation::OperationSummary::new(
+            "Wallet policy confirmation",
+            request.network.clone(),
+            confirmation::RiskLevel::High,
+        )
+        .add("Wallet", wallet_name);
+        if let Some(fee) = request.fee_stroops {
+            summary = summary.add("Fee", format!("{fee} stroops"));
+        }
+        if let SigningTarget::Contract(Some(contract_id)) = &request.target {
+            summary = summary.add("Contract", contract_id);
+        }
+        let confirm_config = confirmation::ConfirmationConfig {
+            risk_level: confirmation::RiskLevel::High,
+            network: request.network.clone(),
+            skip_confirm: false,
+            dry_run: false,
+            prompt: Some("Proceed with signing using this wallet?".to_string()),
+            require_type_confirmation: request.network.eq_ignore_ascii_case("mainnet"),
+            ..Default::default()
+        };
+        if !confirmation::confirm_operation(&summary, &confirm_config)? {
+            let violation = WalletPolicyViolation {
+                code: "WALLET_POLICY_CONFIRMATION_DECLINED",
+                reason: "required signing confirmation was declined".to_string(),
+            };
+            log_wallet_policy_violation(request, &violation)?;
+            anyhow::bail!("WALLET_POLICY_CONFIRMATION_DECLINED: signing was cancelled");
+        }
+    }
+
+    Ok(())
+}
+
+pub(crate) fn authorize_wallet_policy(request: &SigningRequest) -> Result<()> {
+    enforce_wallet_policy(request)
+}
+
+fn log_wallet_policy_violation(
+    request: &SigningRequest,
+    violation: &WalletPolicyViolation,
+) -> Result<()> {
+    let wallet_name = request.wallet_name.as_deref().unwrap_or("unknown");
+    let mut details = std::collections::HashMap::new();
+    details.insert("code".to_string(), violation.code.to_string());
+    details.insert("network".to_string(), request.network.clone());
+    if let Some(fee) = request.fee_stroops {
+        details.insert("fee_stroops".to_string(), fee.to_string());
+    }
+    if let SigningTarget::Contract(Some(contract_id)) = &request.target {
+        details.insert("contract_id".to_string(), contract_id.clone());
+    }
+    audit::log_action(
+        "wallet_policy_violation",
+        wallet_name,
+        "wallet",
+        wallet_name,
+        details,
+        false,
+        Some(violation.to_string()),
+    )
+    .map_err(|audit_error| anyhow::anyhow!("{}; audit logging failed: {}", violation, audit_error))
+}
+
+fn wallet_requires_confirmation(request: &SigningRequest) -> bool {
+    request
+        .usage_policy
+        .as_ref()
+        .is_some_and(|policy| policy.require_confirmation)
+}
+
 /// Produce a partial signature for multi-sig collection flows.
 pub fn sign_transaction_partial(
     transaction_xdr: &str,
@@ -276,6 +503,16 @@ fn decode_transaction_bytes(transaction_xdr: &str) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn request_with_policy(policy: config::WalletUsagePolicy) -> SigningRequest {
+        let mut request = SigningRequest::local_secret(
+            Zeroizing::new("SABCDEFGHIJKLMNOPQRSTUVWXYZ012345678901234567890".to_string()),
+            "testnet",
+        );
+        request.wallet_name = Some("admin".to_string());
+        request.usage_policy = Some(policy);
+        request
+    }
 
     #[test]
     fn local_signing_request_produces_encoded_xdr() {
@@ -361,6 +598,10 @@ mod tests {
             hd_path: hardware_wallet::STELLAR_HD_PATH.to_string(),
             network: "testnet".to_string(),
             skip_confirm: true,
+            wallet_name: None,
+            usage_policy: None,
+            fee_stroops: None,
+            target: SigningTarget::Unspecified,
         };
         let result = sign_transaction_xdr("dGVzdA==", &request);
         assert!(result.is_err());
@@ -372,5 +613,95 @@ mod tests {
             "unexpected error: {}",
             message
         );
+    }
+
+    #[test]
+    fn network_policy_returns_stable_violation_code() {
+        let request = request_with_policy(config::WalletUsagePolicy {
+            allowed_networks: vec!["mainnet".to_string()],
+            ..Default::default()
+        });
+        let violation = evaluate_wallet_policy(&request).unwrap_err();
+        assert_eq!(violation.code, "WALLET_POLICY_NETWORK_DENIED");
+        assert!(violation.reason.contains("testnet"));
+    }
+
+    #[test]
+    fn fee_policy_rejects_unknown_and_over_cap_fees() {
+        let policy = config::WalletUsagePolicy {
+            max_fee: Some(100),
+            ..Default::default()
+        };
+        let unknown = request_with_policy(policy.clone());
+        assert_eq!(
+            evaluate_wallet_policy(&unknown).unwrap_err().code,
+            "WALLET_POLICY_FEE_UNKNOWN"
+        );
+
+        let over_cap = unknown.with_fee_stroops(101);
+        assert_eq!(
+            evaluate_wallet_policy(&over_cap).unwrap_err().code,
+            "WALLET_POLICY_FEE_EXCEEDED"
+        );
+        assert!(evaluate_wallet_policy(&over_cap.with_fee_stroops(100)).is_ok());
+    }
+
+    #[test]
+    fn parsed_envelope_fee_overrides_a_lower_caller_estimate() {
+        let envelope = crate::utils::tx_xdr::unsigned_envelope(
+            &stellar_xdr::curr::MuxedAccount::Ed25519(stellar_xdr::curr::Uint256([1; 32])),
+            1,
+            Vec::new(),
+        )
+        .unwrap();
+        let xdr = crate::utils::tx_xdr::write_envelope(
+            &envelope,
+            crate::utils::tx_xdr::WireFormat::Base64,
+        )
+        .unwrap();
+        let request = request_with_policy(config::WalletUsagePolicy {
+            max_fee: Some(99),
+            ..Default::default()
+        })
+        .with_fee_stroops(1);
+
+        let policy_request = request_with_envelope_fee(&xdr, &request);
+        assert_eq!(policy_request.fee_stroops, Some(100));
+        assert_eq!(
+            evaluate_wallet_policy(&policy_request).unwrap_err().code,
+            "WALLET_POLICY_FEE_EXCEEDED"
+        );
+    }
+
+    #[test]
+    fn contract_policy_rejects_unknown_and_unlisted_contracts() {
+        let request = request_with_policy(config::WalletUsagePolicy {
+            allowed_contracts: vec!["Callowed".to_string()],
+            ..Default::default()
+        });
+        assert_eq!(
+            evaluate_wallet_policy(&request).unwrap_err().code,
+            "WALLET_POLICY_CONTRACT_UNKNOWN"
+        );
+        assert_eq!(
+            evaluate_wallet_policy(&request.with_contract_id("Cother"))
+                .unwrap_err()
+                .code,
+            "WALLET_POLICY_CONTRACT_DENIED"
+        );
+        assert!(evaluate_wallet_policy(&request.with_contract_id("Callowed")).is_ok());
+        assert!(evaluate_wallet_policy(&request.for_non_contract()).is_ok());
+    }
+
+    #[test]
+    fn confirmation_policy_requires_prompt_even_when_skip_confirm_is_set() {
+        let mut request = request_with_policy(config::WalletUsagePolicy {
+            require_confirmation: true,
+            ..Default::default()
+        });
+        request.skip_confirm = true;
+        assert!(wallet_requires_confirmation(&request));
+        request.usage_policy = Some(config::WalletUsagePolicy::default());
+        assert!(!wallet_requires_confirmation(&request));
     }
 }

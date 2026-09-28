@@ -9,6 +9,7 @@ import path from "path";
 import authRoutes from "./routes/auth";
 import templateRoutes from "./routes/templates";
 import reviewRoutes from "./routes/reviews";
+import organizationRoutes from "./routes/organizations";
 import errorHandler from "./middleware/errorHandler";
 import logger from "./utils/logger";
 
@@ -24,6 +25,14 @@ app.use(
   cors({
     origin: process.env.CORS_ORIGIN || "*",
     credentials: true,
+    // Let browser clients read the fair-use headers so they can back off.
+    exposedHeaders: [
+      "RateLimit-Limit",
+      "RateLimit-Remaining",
+      "RateLimit-Reset",
+      "RateLimit-Policy",
+      "Retry-After",
+    ],
   }),
 );
 
@@ -50,6 +59,7 @@ app.get("/health", (req, res) => {
 app.use("/api/auth", authRoutes);
 app.use("/api/templates", templateRoutes);
 app.use("/api/reviews", reviewRoutes);
+app.use("/api/orgs", organizationRoutes);
 
 // 404 handler
 app.use((req, res) => {

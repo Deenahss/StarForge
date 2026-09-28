@@ -4,9 +4,11 @@ import { TemplateStore, ITemplate } from "../models/Template";
 import { searchAnalytics } from "../models/SearchAnalytics";
 import { searchEngine, SearchOptions } from "../services/searchEngine";
 import { verifyToken, optionalAuth } from "../middleware/auth";
-import { mutationRateLimiter } from "../middleware/rateLimiter";
+import { mutationRateLimiter, searchRateLimiter } from "../middleware/rateLimiter";
 import { ownershipHistoryStore } from "../models/OwnershipHistory";
 import { userStore } from "../models/User";
+import { organizationStore } from "../models/Organization";
+import { ownershipTransferStore } from "../models/OwnershipTransfer";
 import logger from "../utils/logger";
 import fs from "fs";
 import path from "path";
@@ -15,6 +17,48 @@ const router = express.Router();
 export const templateStore = new TemplateStore();
 
 const STORAGE_DIR = process.env.STORAGE_DIR || "./storage/templates";
+
+const SPDX_LICENSE_IDS = new Set([
+  "0BSD",
+  "AFL-3.0",
+  "AGPL-3.0-only",
+  "AGPL-3.0-or-later",
+  "Apache-1.1",
+  "Apache-2.0",
+  "Artistic-2.0",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "BSD-3-Clause-Clear",
+  "BSD-4-Clause",
+  "BSL-1.0",
+  "CC0-1.0",
+  "CDDL-1.0",
+  "CDDL-1.1",
+  "EPL-1.0",
+  "EPL-2.0",
+  "EUPL-1.1",
+  "EUPL-1.2",
+  "GPL-1.0-only",
+  "GPL-1.0-or-later",
+  "GPL-2.0-only",
+  "GPL-2.0-or-later",
+  "GPL-3.0-only",
+  "GPL-3.0-or-later",
+  "ISC",
+  "LGPL-2.0-only",
+  "LGPL-2.0-or-later",
+  "LGPL-2.1-only",
+  "LGPL-2.1-or-later",
+  "LGPL-3.0-only",
+  "LGPL-3.0-or-later",
+  "MIT",
+  "MPL-1.1",
+  "MPL-2.0",
+  "MS-PL",
+  "Unlicense",
+  "WTFPL",
+  "Zlib",
+]);
 
 // Ensure storage directory exists
 if (!fs.existsSync(STORAGE_DIR)) {
@@ -26,9 +70,13 @@ function serializeTemplate(tpl: ITemplate) {
   return {
     id: tpl.id,
     name: tpl.name,
+    namespace: tpl.namespace,
+    organization_id: tpl.organizationId,
     version: tpl.version,
     description: tpl.description,
     author: tpl.author,
+    authors: tpl.authors || [],
+    attribution: tpl.attribution || "",
     tags: tpl.tags,
     functionality: tpl.functionality || [],
     license: tpl.license,
@@ -53,6 +101,14 @@ function serializeTemplate(tpl: ITemplate) {
   };
 }
 
+function canonicalName(name: string, organization?: string): string {
+  return organization ? `@${organization}/${name.replace(/^@[^/]+\//, "")}` : name;
+}
+
+function storageName(name: string): string {
+  return name.replace(/[\\/]/g, "__");
+}
+
 // ---------------------------------------------------------------------------
 // Intelligent search
 // ---------------------------------------------------------------------------
@@ -61,7 +117,7 @@ function serializeTemplate(tpl: ITemplate) {
 // personalization, filtering, sorting, and usage analytics. See
 // registry-api/INTELLIGENT_SEARCH.md for the full design notes.
 
-router.post("/search", optionalAuth, async (req: Request, res: Response) => {
+router.post("/search", optionalAuth, searchRateLimiter, async (req: Request, res: Response) => {
   try {
     const {
       query = "",
@@ -191,6 +247,7 @@ router.post("/search", optionalAuth, async (req: Request, res: Response) => {
 router.get(
   "/search/suggestions",
   optionalAuth,
+  searchRateLimiter,
   async (req: Request, res: Response) => {
     try {
       const q = String(req.query.q || "");
@@ -442,12 +499,12 @@ router.post(
   mutationRateLimiter,
   async (req: Request, res: Response) => {
     try {
-      const name = req.params.name as string;
-      const { new_publisher_id, new_username } = req.body;
+      const { name } = req.params;
+      const { new_publisher_id, new_username, organization } = req.body;
 
-      if (!new_publisher_id && !new_username) {
+      if (!new_publisher_id && !new_username && !organization) {
         return res.status(400).json({
-          error: "Missing new_publisher_id or new_username in request body",
+          error: "Missing new_publisher_id, new_username, or organization in request body",
         });
       }
 
@@ -461,52 +518,116 @@ router.post(
       }
 
       const currentOwnerId = await templateStore.findPublisherForName(name);
-      if (currentOwnerId !== req.userId) {
+      const currentTemplate = templates[0];
+      const currentOrganizationRole = currentTemplate.organizationId
+        ? await organizationStore.roleFor(currentTemplate.namespace!.slice(1), req.userId)
+        : null;
+      if (
+        currentOwnerId !== req.userId &&
+        currentOrganizationRole !== "owner" &&
+        currentOrganizationRole !== "admin"
+      ) {
         return res.status(403).json({
           error: "Forbidden: only the template owner can transfer ownership",
         });
       }
 
       let targetUser = null;
+      const targetOrganization = organization
+        ? await organizationStore.findBySlug(organization)
+        : null;
+      if (organization && !targetOrganization) {
+        return res.status(404).json({ error: "Target organization not found" });
+      }
       if (new_publisher_id) {
         targetUser = await userStore.findById(new_publisher_id);
       } else if (new_username) {
         targetUser = await userStore.findByUsername(new_username);
       }
 
-      if (!targetUser) {
+      if (!targetUser && !targetOrganization) {
         return res.status(404).json({ error: "Target publisher not found" });
       }
 
-      await templateStore.updatePublisherForName(name, targetUser.id);
-      const currentUser = await userStore.findById(req.userId);
-
-      await ownershipHistoryStore.record({
-        templateId: templates[0].id,
+      const pending = await ownershipTransferStore.create({
         templateName: name,
-        version: templates[0].version,
-        publisherId: targetUser.id,
-        publisherUsername: targetUser.username,
-        previousPublisherId: req.userId,
-        action: "TRANSFER_OWNERSHIP",
-        ipAddress: req.ip,
-        metadata: {
-          transferred_by: currentUser?.username || req.userId,
-        },
+        requestedBy: req.userId,
+        targetUserId: targetUser?.id,
+        targetOrganizationSlug: organization,
       });
-
-      logger.info(
-        `Ownership of ${name} transferred from ${req.userId} to ${targetUser.id}`,
-      );
-
-      res.json({
+      return res.status(202).json({
         success: true,
-        message: `Ownership of ${name} successfully transferred to ${targetUser.username}`,
-        new_publisher_id: targetUser.id,
+        pending: true,
+        transfer_id: pending.id,
+        message: "Ownership transfer requested. The receiving party must confirm it.",
       });
     } catch (err) {
       logger.error("Transfer ownership error", err);
-      res.status(500).json({ error: "Transfer ownership failed" });
+      return res.status(500).json({ error: "Transfer ownership failed" });
+    }
+  },
+);
+
+// The receiving user or organization member confirms a pending transfer.
+router.post(
+  "/:name/transfer-ownership/confirm",
+  verifyToken,
+  mutationRateLimiter,
+  async (req: Request, res: Response) => {
+    try {
+      const { transfer_id } = req.body;
+      if (!req.userId) return res.status(401).json({ error: "Unauthorized" });
+      const pending = await ownershipTransferStore.find(transfer_id);
+      if (!pending || pending.templateName !== req.params.name) {
+        return res.status(404).json({ error: "Ownership transfer request not found" });
+      }
+      if (pending.requestedBy === req.userId) {
+        return res.status(403).json({ error: "The requesting owner cannot confirm the transfer" });
+      }
+      const templates = await templateStore.findByName(req.params.name);
+      if (templates.length === 0) return res.status(404).json({ error: "Template not found" });
+
+      let targetPublisherId: string;
+      let targetUsername: string | undefined;
+      let targetOrganizationId: string | undefined;
+      if (pending.targetUserId) {
+        if (pending.targetUserId !== req.userId) {
+          return res.status(403).json({ error: "Only the receiving publisher can confirm this transfer" });
+        }
+        const targetUser = await userStore.findById(req.userId);
+        if (!targetUser) return res.status(404).json({ error: "Target publisher not found" });
+        targetPublisherId = targetUser.id;
+        targetUsername = targetUser.username;
+        await templateStore.updatePublisherForName(req.params.name, targetUser.id);
+      } else {
+        const org = await organizationStore.findBySlug(pending.targetOrganizationSlug!);
+        const role = await organizationStore.roleFor(pending.targetOrganizationSlug!, req.userId);
+        if (!org || (role !== "owner" && role !== "admin")) {
+          return res.status(403).json({ error: "An organization owner or admin must confirm this transfer" });
+        }
+        targetPublisherId = "organization";
+        targetOrganizationId = org.id;
+        targetUsername = org.slug;
+        await templateStore.updateOrganizationForName(req.params.name, org.id, org.slug);
+      }
+
+      const currentUser = await userStore.findById(pending.requestedBy);
+      await ownershipHistoryStore.record({
+        templateId: templates[0].id,
+        templateName: req.params.name,
+        version: templates[0].version,
+        publisherId: targetPublisherId,
+        publisherUsername: targetUsername,
+        previousPublisherId: pending.requestedBy,
+        action: "TRANSFER_OWNERSHIP",
+        ipAddress: req.ip,
+        metadata: { transferred_by: currentUser?.username || pending.requestedBy, organization_id: targetOrganizationId },
+      });
+      await ownershipTransferStore.delete(pending.id);
+      return res.json({ success: true, new_publisher_id: targetPublisherId, organization_id: targetOrganizationId });
+    } catch (err) {
+      logger.error("Confirm ownership transfer error", err);
+      return res.status(500).json({ error: "Ownership transfer confirmation failed" });
     }
   },
 );
@@ -573,10 +694,13 @@ router.get(
 router.post("/publish", verifyToken, mutationRateLimiter, async (req: Request, res: Response) => {
   try {
     const {
-      name,
+      name: requestedName,
+      org,
       version,
       description,
       author,
+      authors,
+      attribution,
       tags,
       functionality,
       license,
@@ -587,8 +711,28 @@ router.post("/publish", verifyToken, mutationRateLimiter, async (req: Request, r
       content,
     } = req.body;
 
-    if (!name || !version || !description || !author || !content) {
+    if (!requestedName || !version || !description || !author || !content) {
       return res.status(400).json({ error: "Missing required fields" });
+    }
+
+    if (typeof license !== "string" || !SPDX_LICENSE_IDS.has(license)) {
+      return res.status(400).json({
+        error:
+          "A valid SPDX license identifier is required (for example MIT or Apache-2.0).",
+      });
+    }
+
+    const hasAuthors =
+      (typeof authors === "string" && authors.trim().length > 0) ||
+      (Array.isArray(authors) &&
+        authors.some((value) => typeof value === "string" && value.trim().length > 0));
+    const hasAttribution =
+      typeof attribution === "string" && attribution.trim().length > 0;
+    if (!hasAuthors && !hasAttribution) {
+      return res.status(400).json({
+        error:
+          "Attribution metadata is required; provide a non-empty authors list or attribution string.",
+      });
     }
 
     if (!req.userId) {
@@ -596,6 +740,15 @@ router.post("/publish", verifyToken, mutationRateLimiter, async (req: Request, r
     }
 
     const publisher = await userStore.findById(req.userId);
+    const name = canonicalName(requestedName, org);
+    const organization = org ? await organizationStore.findBySlug(org) : null;
+    if (org && !organization) return res.status(404).json({ error: "Organization not found" });
+    if (organization) {
+      const role = await organizationStore.roleFor(org, req.userId);
+      if (role !== "owner" && role !== "admin" && role !== "maintainer") {
+        return res.status(403).json({ error: "You are not a member of this organization" });
+      }
+    }
 
     // Check ownership of template name across publishers
     const existingOwnerId = await templateStore.findPublisherForName(name);
@@ -615,7 +768,7 @@ router.post("/publish", verifyToken, mutationRateLimiter, async (req: Request, r
 
     // Save template content
     const templateId = uuid();
-    const fileName = `${name}-${version}-${templateId}.zip`;
+    const fileName = `${storageName(name)}-${version}-${templateId}.zip`;
     const filePath = path.join(STORAGE_DIR, fileName);
 
     const buffer = Buffer.from(content, "base64");
@@ -627,6 +780,12 @@ router.post("/publish", verifyToken, mutationRateLimiter, async (req: Request, r
       version,
       description,
       author,
+      authors: Array.isArray(authors)
+        ? authors.filter((value: unknown): value is string => typeof value === "string" && value.trim().length > 0)
+        : typeof authors === "string" && authors.trim()
+          ? [authors.trim()]
+          : [],
+      attribution,
       tags: tags || [],
       functionality: functionality || [],
       license,
@@ -637,6 +796,8 @@ router.post("/publish", verifyToken, mutationRateLimiter, async (req: Request, r
       downloads: 0,
       verified: false,
       publisherId: req.userId,
+      namespace: org ? `@${org}` : undefined,
+      organizationId: organization?.id,
       createdAt: new Date(),
       updatedAt: new Date(),
       ratings: { average: 0, count: 0, distribution: {} },
@@ -658,6 +819,7 @@ router.post("/publish", verifyToken, mutationRateLimiter, async (req: Request, r
         license,
         tags: tags || [],
         repository,
+        organization: org,
       },
     });
 
@@ -700,14 +862,14 @@ router.get(
 
       const filePath = path.join(
         STORAGE_DIR,
-        `${tpl.name}-${tpl.version}-${tpl.id}.zip`,
+        `${storageName(tpl.name)}-${tpl.version}-${tpl.id}.zip`,
       );
 
       if (!fs.existsSync(filePath)) {
         return res.status(404).json({ error: "Template file not found" });
       }
 
-      res.download(filePath, `${tpl.name}-${tpl.version}.zip`);
+      res.download(filePath, `${storageName(tpl.name)}-${tpl.version}.zip`);
     } catch (err) {
       logger.error("Download error", err);
       res.status(500).json({ error: "Download failed" });

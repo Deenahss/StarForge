@@ -2,6 +2,13 @@
 
 Browse every top-level command and its most important flags. For wallet, template, and transaction details see also [API_REFERENCE.md](../API_REFERENCE.md).
 
+Commands are grouped by noun (`starforge contract test`, `starforge wallet
+auth`, `starforge tool tutorial`). The old flat spellings still work for one
+minor release and print a deprecation warning; see
+[CLI_COMMAND_TREE.md](CLI_COMMAND_TREE.md) for the full migration table and
+[adr/0007-noun-verb-command-tree.md](adr/0007-noun-verb-command-tree.md) for
+the rationale.
+
 ## Global options
 
 | Flag | Description |
@@ -17,7 +24,7 @@ Browse every top-level command and its most important flags. For wallet, templat
 
 ```bash norun
 # Environment check
-starforge info
+starforge config info
 
 # Wallet + network
 starforge wallet create deployer --fund
@@ -25,11 +32,11 @@ starforge network show
 
 # Templates + deploy
 starforge template list
-starforge deploy --wasm ./contract.wasm --wallet deployer --simulate
+starforge deploy run --wasm ./contract.wasm --wallet deployer --simulate
 
 # Guided tutorial
-starforge tutorial start hello-world
-starforge tutorial next
+starforge tool tutorial start hello-world
+starforge tool tutorial next
 ```
 
 ---
@@ -57,7 +64,7 @@ limits enforced on untrusted backup files.
 
 ---
 
-## `multisig`
+## `wallet multisig`
 
 | Subcommand | Purpose |
 |------------|---------|
@@ -70,17 +77,17 @@ limits enforced on untrusted backup files.
 | `templates` / `from-template` | Use common scenarios like escrow, company treasury, DAO, vault, and payment |
 
 ```bash norun
-starforge multisig wizard
-starforge multisig create --threshold 2 --signers alice,bob,carol \
+starforge wallet multisig wizard
+starforge wallet multisig create --threshold 2 --signers alice,bob,carol \
   --title "Treasury payment" --transaction-xdr <XDR>
-starforge multisig status proposal.json
-starforge multisig verify proposal.json
-starforge multisig notify proposal.json --message "Please sign the treasury payment"
+starforge wallet multisig status proposal.json
+starforge wallet multisig verify proposal.json
+starforge wallet multisig notify proposal.json --message "Please sign the treasury payment"
 ```
 
 ---
 
-## `new`
+## `project new`
 
 | Subcommand | Purpose |
 |------------|---------|
@@ -89,7 +96,7 @@ starforge multisig notify proposal.json --message "Please sign the treasury paym
 
 ---
 
-## `contract` / `inspect` / `deploy`
+## `contract` / `deploy`
 
 | Command | Purpose |
 |---------|---------|
@@ -101,7 +108,12 @@ starforge multisig notify proposal.json --message "Please sign the treasury paym
 | `inspect storage` | Deep storage inspection |
 | `deploy --wasm <FILE>` | Prepare Soroban deployment |
 
-**`deploy` flags:** `--network`, `--wallet`, `--optimize`, `--simulate`, `--yes`, `--execute`, `--policy`, `--checklist`
+**`deploy` flags:** `--network`, `--wallet`, `--optimize`, `--simulate`, `--yes`, `--execute`, `--policy`, `--checklist`, `--skip-smoke`
+
+After a successful `--execute`, `deploy` runs the `[[smoke_tests]]` declared in
+`starforge-project.toml` against the new contract. A smoke failure exits with
+code **9** (`SMOKE_TEST_FAILURE`), which is distinct from a failed deploy.
+`--skip-smoke` opts out. See [SMOKE_TESTS.md](SMOKE_TESTS.md).
 
 Deploy policy files (`starforge-deploy-policy.toml`) gate allowed networks,
 required reviewers, and checklist items. Validate in CI with
@@ -116,10 +128,10 @@ footprint alongside the minimum resource fee and a recommended fee that
 includes a safety margin. See [SIMULATION_RESOURCES.md](SIMULATION_RESOURCES.md).
 
 ```bash norun
-starforge deploy --wasm target/wasm32v1-none/release/token.wasm \
+starforge deploy run --wasm target/wasm32v1-none/release/token.wasm \
   --wallet deployer --network testnet --simulate
 
-starforge deploy --wasm ./token.wasm --optimize --yes --execute
+starforge deploy run --wasm ./token.wasm --optimize --yes --execute
 
 starforge contract generate-bindings ./token.wasm --lang rust
 ```
@@ -172,7 +184,7 @@ starforge contract invoke-script ./ops.yaml --network testnet
 
 ---
 
-## `test`
+## `contract test`
 
 | Flag | Purpose |
 |------|---------|
@@ -193,17 +205,17 @@ starforge contract invoke-script ./ops.yaml --network testnet
 | `--testnet-dry-run` | Validate testnet configuration without probing RPC health |
 
 ```bash norun
-starforge test --wasm ./target/contract.wasm \
+starforge contract test --wasm ./target/contract.wasm \
   --fixture ./contract-tests.json --coverage --source ./src/lib.rs --report html
 
-starforge test --wasm ./target/contract.wasm --source ./src/lib.rs \
+starforge contract test --wasm ./target/contract.wasm --source ./src/lib.rs \
   --coverage --coverage-out coverage.html --coverage-format html \
   --coverage-ci --coverage-goal 85 --branch-coverage-goal 70
 
-starforge test --wasm ./target/contract.wasm --source ./src/lib.rs \
+starforge contract test --wasm ./target/contract.wasm --source ./src/lib.rs \
   --coverage-ci-workflow-out .github/workflows/starforge-coverage.yml
 
-starforge test --wasm ./target/contract.wasm \
+starforge contract test --wasm ./target/contract.wasm \
   --fixture ./contract-tests.toml --testnet --testnet-dry-run
 ```
 
@@ -212,7 +224,7 @@ Coverage analysis tracks Soroban contract functions, line spans, branch paths, u
 
 ---
 
-## `network` / `node`
+## `network`
 
 | Command | Purpose |
 |---------|---------|
@@ -220,17 +232,30 @@ Coverage analysis tracks Soroban contract functions, line spans, branch paths, u
 | `network switch <NAME>` | Set active network |
 | `network add` | Add custom Horizon/RPC/Friendbot endpoints |
 | `network test` | Connectivity probe |
-| `node start` | Start local quickstart devnet (`--port`) |
+| `network node start` | Start local quickstart devnet (`--port`) |
 
 ---
 
-## `tx`
+## `wallet tx`
 
 | Subcommand | Purpose |
 |------------|---------|
-| `tx send` | Payment (`--from`, `--to`, `--amount`, `--asset`) |
-| `tx batch` | Batch operations from JSON (`--file`, `--from`) |
-| `tx history <PUBKEY>` | Recent transactions (`--limit`, `--cursor`, `--successful`) |
+| `wallet tx send` | Payment (`--from`, `--to`, `--amount`, `--asset`) |
+| `wallet tx batch` | Batch operations from JSON (`--file`, `--from`) |
+| `wallet tx history <PUBKEY>` | Recent transactions (`--limit`, `--cursor`, `--successful`) |
+
+---
+
+## `wallet auth`
+
+SEP-10 web authentication. Reads an anchor's `stellar.toml`, runs the
+challenge/response handshake with a saved wallet, and prints the JWT the anchor
+issues. See [SEP10_AUTH.md](SEP10_AUTH.md) for the full walkthrough, the validation
+rules, and the JSON output.
+
+| Subcommand | Purpose |
+|------------|---------|
+| `wallet auth --domain <DOMAIN> --wallet <NAME>` | Authenticate and print the JWT (`--network`, `--toml-url`, `--json`, `--verbose`, `--output`) |
 
 ---
 
@@ -249,6 +274,18 @@ When downloading template archives from a remote registry, the CLI automatically
 
 ---
 
+## `template-vcs`
+
+| Subcommand | Purpose |
+|------------|---------|
+| `template-vcs upgrade <PROJECT> --to <VERSION>` | Print a read-only upgrade checklist from the project's `.starforge-template.json` version (`--patch-hints` adds manual suggestions) |
+| `template-vcs migrate <PATH> <FROM> <TO>` | Generate an AI migration guide between recorded template versions |
+
+The upgrade command never changes project files. Projects without
+`.starforge-template.json` are reported as having an unknown source version.
+
+---
+
 ## `gas`
 
 | Subcommand | Purpose |
@@ -259,7 +296,7 @@ When downloading template archives from a remote registry, the CLI automatically
 
 ---
 
-## `simulate` / `cost` — resource fees
+## `network simulate` / `deploy cost` — resource fees
 
 | Command | Purpose |
 |---------|---------|
@@ -272,10 +309,10 @@ Shared flags: `--margin <PERCENT>` (default `20`), `--inclusion-fee <STROOPS>`
 (default `100`). `simulate resources` also takes `--json`.
 
 ```bash norun
-starforge simulate resources --file simulation.json --json
-starforge simulate resources --contract CCPYZ... --function balance --network testnet
-starforge cost resources --file simulation.json --network mainnet --enforce
-starforge cost forecast-batch batch-invoke-manifest.json --network testnet --enforce
+starforge network simulate resources --file simulation.json --json
+starforge network simulate resources --contract CCPYZ... --function balance --network testnet
+starforge deploy cost resources --file simulation.json --network mainnet --enforce
+starforge deploy cost forecast-batch batch-invoke-manifest.json --network testnet --enforce
 ```
 
 Full reference: [SIMULATION_RESOURCES.md](SIMULATION_RESOURCES.md) and
@@ -283,7 +320,7 @@ Full reference: [SIMULATION_RESOURCES.md](SIMULATION_RESOURCES.md) and
 
 ---
 
-## `advanced-perf`
+## `contract profile`
 
 | Subcommand | Purpose |
 |------------|---------|
@@ -296,10 +333,10 @@ Full reference: [SIMULATION_RESOURCES.md](SIMULATION_RESOURCES.md) and
 | `advanced-perf generate-dashboard <CONTRACT>` | Show the recorded-metrics performance dashboard |
 
 ```bash norun
-starforge advanced-perf profile ./target/wasm32-unknown-unknown/release/token.wasm \
+starforge contract profile profile ./target/wasm32-unknown-unknown/release/token.wasm \
   --label token --dashboard ./target/token-profile.html
 
-starforge advanced-perf profile ./target/wasm32-unknown-unknown/release/token.wasm \
+starforge contract profile profile ./target/wasm32-unknown-unknown/release/token.wasm \
   --baseline ~/.starforge/contract_profiles/profile-abc123def456.json \
   --output ./target/token-profile.json
 ```
@@ -322,7 +359,7 @@ format, thresholds, noise handling, and CI integration.
 
 ---
 
-## `docs`
+## `contract docs`
 
 AI-assisted documentation generation for Soroban contracts (issue #499).
 
@@ -336,13 +373,13 @@ AI-assisted documentation generation for Soroban contracts (issue #499).
 | `docs html / api-ref / publish` | HTML site, API reference, and publish helpers |
 
 ```bash norun
-starforge docs generate counter --name Counter \
+starforge contract docs generate counter --name Counter \
   --source ./contracts/counter/src/lib.rs \
   --lang rust,ts,python \
   --output ./docs/counter.md
 
-starforge docs export counter
-starforge docs show counter
+starforge contract docs export counter
+starforge contract docs show counter
 ```
 
 With `--source`, StarForge extracts `///` / `//!` rustdoc comments, documents functions and types,
@@ -351,7 +388,7 @@ Set `STARFORGE_AI_API_KEY` (optional `STARFORGE_AI_BASE_URL`, `STARFORGE_AI_MODE
 
 ---
 
-## `security`
+## `contract security`
 
 | Subcommand | Purpose |
 |------------|---------|
@@ -379,7 +416,7 @@ External tools are optional. StarForge runs built-in Soroban heuristics every ti
 
 ---
 
-## `upgrade`
+## `contract upgrade`
 
 | Subcommand | Purpose |
 |------------|---------|
@@ -396,7 +433,7 @@ External tools are optional. StarForge runs built-in Soroban heuristics every ti
 
 ### Contract interface diff (`upgrade auto diff`)
 
-`starforge upgrade auto diff --old-wasm <old.wasm> --new-wasm <new.wasm>` diffs the *public
+`starforge contract upgrade auto diff --old-wasm <old.wasm> --new-wasm <new.wasm>` diffs the *public
 contract interface* (exported ABI functions, public types, and auth surface) between two
 WASM builds and classifies every change as **breaking** or **non-breaking**.
 
@@ -423,7 +460,7 @@ compatibility engine, and the markdown report produced here can be attached to
 
 ---
 
-## `governance`
+## `contract governance`
 
 Contract upgrade governance with voting, timelock, audit trail, and emergency upgrades.
 
@@ -444,7 +481,7 @@ See [GOVERNANCE.md](GOVERNANCE.md) for the full workflow.
 
 ---
 
-## `tutorial`
+## `tool tutorial`
 
 | Subcommand | Purpose |
 |------------|---------|
@@ -459,12 +496,14 @@ See [GOVERNANCE.md](GOVERNANCE.md) for the full workflow.
 
 | Command | Purpose |
 |---------|---------|
-| `info` | Version, config path, network health, Stellar CLI detection |
-| `shell` | Interactive local REPL with persistent history and tab completion |
-| `monitor` | Live event/threshold monitoring |
-| `benchmark` | CLI performance benchmarks |
-| `test` | Soroban WASM test runner |
-| `lint <PATH>` | Static Soroban source lint |
+| `config info` | Version, config path, network health, Stellar CLI detection |
+| `contract repl` | Interactive local REPL with persistent history and tab completion |
+| `contract monitor` | Live event/threshold monitoring |
+| `contract benchmark` | CLI performance benchmarks |
+| `contract test` | Soroban WASM test runner |
+| `contract lint <PATH>` | Static Soroban source lint |
+| `tool pr` | Check PR readiness (CI status and merge conflicts) |
+| `tool bug-report` | Prefilled environment bug report |
 | `plugin install/list/run` | Dynamic plugin management |
 | `completions <SHELL>` | bash/zsh/fish/powershell completions |
 | `privacy mode on/off/status` | Enable, disable, or report strict end-to-end privacy mode |
@@ -482,9 +521,9 @@ automatic network activity. It is the single kill-switch for outbound data.
 | Marketplace / template registry auto-update | Uses the local cache or bundled registry; never fetches remotely |
 
 ```bash run
-starforge privacy mode on        # enable
-starforge privacy mode off       # disable
-starforge privacy mode status    # report effective status
+starforge config privacy mode on        # enable
+starforge config privacy mode off       # disable
+starforge config privacy mode status    # report effective status
 ```
 
 Alternative ways to enable it:
@@ -531,14 +570,14 @@ Live monitoring of contracts or wallets, including Soroban event streaming, rout
 Examples:
 
 ```bash norun
-starforge monitor --contract CCPYZ... --transport websocket --dashboard
-starforge monitor --contract CCPYZ... --route swaps=swap --alert high:mint --persist
-starforge monitor --contract CCPYZ... --replay ~/.starforge/events/testnet-CCPYZ....jsonl --dashboard
-starforge monitor --contract CCPYZ... --trigger mint=./on-mint.sh --allow-triggers
-starforge monitor --contract CCPYZ... --follow \
+starforge contract monitor --contract CCPYZ... --transport websocket --dashboard
+starforge contract monitor --contract CCPYZ... --route swaps=swap --alert high:mint --persist
+starforge contract monitor --contract CCPYZ... --replay ~/.starforge/events/testnet-CCPYZ....jsonl --dashboard
+starforge contract monitor --contract CCPYZ... --trigger mint=./on-mint.sh --allow-triggers
+starforge contract monitor --contract CCPYZ... --follow \
   --alert "critical:topic~admin & !topic~init:admin action" \
   --alert-rate "high:topic~transfer:20/5:transfer burst" --notify high
-starforge monitor --contract CCPYZ... --replay events.jsonl \
+starforge contract monitor --contract CCPYZ... --replay events.jsonl \
   --from-ledger 51200 --to-ledger 51900 --alert-rate "transfer:20/5" --dashboard
 ```
 
@@ -576,6 +615,8 @@ starforge my-plugin <args>
 
 ## See also
 
+- [CLI_COMMAND_TREE.md](CLI_COMMAND_TREE.md) — noun-verb tree and the deprecated-name migration table
+- [COMMAND_CHEATSHEET.md](COMMAND_CHEATSHEET.md) — generated one-page command list
 - [API_REFERENCE.md](../API_REFERENCE.md) — detailed per-command examples and output samples
 - [DEVELOPER_GUIDE.md](../DEVELOPER_GUIDE.md) — contributing and local development
 - [SIMULATION_RESOURCES.md](SIMULATION_RESOURCES.md) — CPU, memory, footprint, and resource fees

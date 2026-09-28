@@ -13,6 +13,7 @@ Welcome to StarForge! This guide will help you get started contributing to the p
 - [Development Workflow](#development-workflow)
 - [Code Quality](#code-quality)
 - [Submitting a Pull Request](#submitting-a-pull-request)
+- [Writing Plugins](#writing-plugins)
 - [Contributing to AI Features](#contributing-to-ai-features)
 - [Common Issues & Troubleshooting](#common-issues--troubleshooting)
 - [Questions & Support](#questions--support)
@@ -650,6 +651,22 @@ When opening a PR, fill out the template with:
 - **Reference issues**: Use `closes #XXX` to automatically link issues
 - **Test thoroughly**: Include test cases for both happy path and edge cases
 - **Update docs**: If your changes affect user-facing behavior, update docs
+
+---
+
+## Writing Plugins
+
+Building a StarForge plugin, or changing one of the example plugins? Start with
+the [plugin authoring cookbook](docs/plugins/cookbook.md). It walks through a
+hello-world plugin, capabilities, testing, signing, trust metadata, publishing
+and ABI compatibility, using the example plugins in
+[`examples/plugins/`](examples/plugins/). CI builds and tests those examples in
+the **Plugin Cookbook Examples** job; run the same check locally with:
+
+```bash
+cp Cargo.lock examples/plugins/Cargo.lock
+cargo test --manifest-path examples/plugins/Cargo.toml --workspace
+```
 
 ---
 
