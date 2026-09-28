@@ -1273,7 +1273,8 @@ pub fn config_dir() -> PathBuf {
 /// matches the real home, so the resolved path is identical to
 /// `dirs::home_dir()`.
 fn resolve_home_dir() -> PathBuf {
-    if let Some(home) = std::env::var_os("USERPROFILE")
+    if let Some(home) = std::env::var_os("STARFORGE_HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
         .or_else(|| std::env::var_os("HOME"))
         .filter(|v| !v.is_empty())
     {
