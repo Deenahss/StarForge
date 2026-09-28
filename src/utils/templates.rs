@@ -4802,3 +4802,36 @@ mod tests {
         assert_eq!(list_empty.len(), 0);
     }
 }
+
+#[cfg(test)]
+mod scaffoldable_examples_tests {
+    use super::*;
+
+    #[test]
+    fn every_example_directory_is_registered_and_materializable() {
+        let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("templates/examples");
+        let registry: TemplateRegistry = serde_json::from_str(DEFAULT_REGISTRY)
+            .expect("bundled template registry must be valid JSON");
+
+        for item in fs::read_dir(&examples).expect("templates/examples must be readable") {
+            let path = item.expect("example directory entry").path();
+            if !path.is_dir() {
+                continue;
+            }
+            let name = path.file_name().unwrap().to_string_lossy();
+            let registered = registry.templates.iter().any(|entry| {
+                entry.name == name.as_ref()
+                    && matches!(&entry.source, TemplateSource::Builtin { id } if id == name.as_ref())
+            });
+            assert!(
+                registered,
+                "example template '{name}' is not scaffoldable by `starforge new`"
+            );
+
+            let temp = tempfile::tempdir().unwrap();
+            fetch_builtin_template(&name, temp.path())
+                .unwrap_or_else(|error| panic!("example '{name}' cannot be resolved: {error}"));
+            assert!(temp.path().join("Cargo.toml").is_file());
+        }
+    }
+}
