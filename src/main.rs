@@ -68,9 +68,10 @@ struct Cli {
     #[arg(long, global = true, hide = true)]
     allow_network_passphrase_mismatch: bool,
 
-    /// Show all help flags, including advanced/power-user options that are hidden by default
+    /// Allow mainnet signing with an unencrypted plaintext secret key.
+    /// This is unsafe and should only be used for deliberate legacy operations.
     #[arg(long, global = true)]
-    help_all: bool,
+    allow_plaintext_mainnet: bool,
 }
 
 #[derive(Subcommand)]
@@ -269,6 +270,7 @@ async fn run() {
     }
     utils::interactive::set_non_interactive(cli.non_interactive);
     utils::network_guard::set_allow_mismatch(cli.allow_network_passphrase_mismatch);
+    utils::network_guard::set_allow_plaintext_mainnet(cli.allow_plaintext_mainnet);
 
     // Initialise structured logging before anything else runs.
     let log_cfg =
