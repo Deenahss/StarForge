@@ -832,13 +832,52 @@ pub async fn handle(args: DeployArgs) -> Result<()> {
                 args.yes,
                 "contract deployment",
             )?;
-            soroban::sign_deploy_transaction(&wasm_hash, wallet, &args.network, &signing_request)?;
+            let fee_stroops = if wallet.usage_policy.max_fee.is_some() {
+                Some(
+                    soroban::simulate_deploy_transaction(&wasm_hash, &args.network, wallet)
+                        .await?
+                        .fee,
+                )
+            } else {
+                None
+            };
+            soroban::sign_deploy_transaction(
+                &wasm_hash,
+                wallet,
+                &args.network,
+                &signing_request,
+                fee_stroops,
+            )?;
             p::success(&format!("Deployment transaction signed on {}", device));
         } else if wallet.secret_key.is_none() {
             anyhow::bail!(
                 "Wallet '{}' has no local secret key. Use --hardware ledger or --hardware trezor for deployment.",
                 wallet.name
             );
+        } else {
+            let signing_request = wallet_signer::SigningRequest::from_options(
+                Some(wallet),
+                None,
+                Some(&args.hd_path),
+                &args.network,
+                args.yes,
+                "contract deployment",
+            )?;
+            let fee_stroops = if wallet.usage_policy.max_fee.is_some() {
+                Some(
+                    soroban::simulate_deploy_transaction(&wasm_hash, &args.network, wallet)
+                        .await?
+                        .fee,
+                )
+            } else {
+                None
+            };
+            let signing_request = match fee_stroops {
+                Some(fee) => signing_request.with_fee_stroops(fee),
+                None => signing_request,
+            }
+            .for_contract_deploy();
+            wallet_signer::authorize_wallet_policy(&signing_request)?;
         }
     }
 

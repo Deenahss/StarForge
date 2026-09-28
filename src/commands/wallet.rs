@@ -55,6 +55,7 @@ fn backup_entry_from(entry: &config::WalletEntry) -> WalletBackupEntry {
         derivation_index: entry.derivation_index,
         derivation_path: entry.derivation_path.clone(),
         mnemonic_wallet: entry.mnemonic_wallet.clone(),
+        usage_policy: entry.usage_policy.clone(),
     }
 }
 
@@ -1333,6 +1334,10 @@ async fn create(
         funded: false,
         kdf_options: kdf,
         rotation_history: Vec::new(),
+        derivation_index: None,
+        derivation_path: None,
+        mnemonic_wallet: None,
+        usage_policy: config::WalletUsagePolicy::default(),
     };
     cfg.wallets.push(wallet);
 
@@ -2743,6 +2748,7 @@ fn batch_import_from_mnemonic(
             derivation_index: Some(idx),
             derivation_path: Some(path_str),
             mnemonic_wallet: None,
+            usage_policy: config::WalletUsagePolicy::default(),
         });
         p::success(&format!(
             "Imported derived wallet '{}' (index {})",
@@ -2810,6 +2816,7 @@ fn import_from_hardware(
         derivation_index: None,
         derivation_path: None,
         mnemonic_wallet: None,
+        usage_policy: config::WalletUsagePolicy::default(),
     });
     config::save(&updated_cfg)?;
 
@@ -2876,6 +2883,7 @@ fn import_from_mnemonic(
         derivation_index: Some(account_index),
         derivation_path: Some(path_str),
         mnemonic_wallet: None,
+        usage_policy: config::WalletUsagePolicy::default(),
     });
 
     config::save(&cfg)?;
@@ -2940,6 +2948,10 @@ fn import_from_secret_key(
         funded: false,
         kdf_options: kdf,
         rotation_history: Vec::new(),
+        derivation_index: None,
+        derivation_path: None,
+        mnemonic_wallet: None,
+        usage_policy: config::WalletUsagePolicy::default(),
     });
 
     config::save(&cfg)?;
@@ -3011,6 +3023,7 @@ fn import_wallets(file: PathBuf) -> Result<()> {
             derivation_index: wallet.derivation_index,
             derivation_path: wallet.derivation_path,
             mnemonic_wallet: wallet.mnemonic_wallet,
+            usage_policy: wallet.usage_policy,
         });
     }
 
@@ -3168,6 +3181,7 @@ mod tests {
             derivation_index: None,
             derivation_path: None,
             mnemonic_wallet: None,
+            usage_policy: WalletUsagePolicy::default(),
         }
     }
 
@@ -3336,6 +3350,7 @@ async fn derive_account(
         derivation_index: Some(target_index),
         derivation_path: Some(path_str),
         mnemonic_wallet: Some(source_wallet),
+        usage_policy: config::WalletUsagePolicy::default(),
     };
 
     if fund {
