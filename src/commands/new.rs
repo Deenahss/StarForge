@@ -263,6 +263,23 @@ async fn scaffold_contract(
                 ));
                 return Ok(());
             }
+            templates::CompatibilityStatus::SorobanSdkIncompatible {
+                sdk_min,
+                sdk_max,
+                found_version,
+            } => {
+                let range = match (sdk_min, sdk_max) {
+                    (Some(min), Some(max)) => format!(">= {} and <= {}", min, max),
+                    (Some(min), None) => format!(">= {}", min),
+                    (None, Some(max)) => format!("<= {}", max),
+                    (None, None) => "compatible".to_string(),
+                };
+                p::error(&format!(
+                    "Template '{}' requires Soroban SDK {} but running version is {}.\nChoose a compatible template or adjust SDK version.",
+                    entry.name, range, found_version
+                ));
+                return Ok(());
+            }
         }
     }
 
@@ -385,6 +402,9 @@ fn cargo_toml(name: &str, license: &str, author: &str) -> String {
     } else {
         format!("authors = [\"{author}\"]\n")
     };
+    // Single source of truth for the generated-project SDK version — see
+    // `crate::utils::templates::SOROBAN_SDK_VERSION`.
+    let soroban_sdk = templates::SOROBAN_SDK_VERSION;
     format!(
         r#"[package]
 name = "{name}"
@@ -395,10 +415,10 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-soroban-sdk = "21.0.0"
+soroban-sdk = "{soroban_sdk}"
 
 [dev-dependencies]
-soroban-sdk = {{ version = "21.0.0", features = ["testutils"] }}
+soroban-sdk = {{ version = "{soroban_sdk}", features = ["testutils"] }}
 
 [profile.release]
 opt-level = "z"

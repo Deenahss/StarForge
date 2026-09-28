@@ -656,6 +656,83 @@ pub async fn submit_multisig_transaction(
     }
 }
 
+/// Submits an already-signed envelope to Horizon exactly as given.
+///
+/// Unlike [`submit_payment_with_signing`] this performs no signing, so the
+/// caller owns the bytes on the wire — the contract `tx submit` needs to stay
+/// composable with `tx encode | tx sign`.
+pub async fn submit_envelope(
+    envelope_xdr: &str,
+    network: &str,
+) -> Result<EnvelopeSubmitOutcome> {
+    let horizon = horizon_url(network)?;
+    let url = format!("{}/transactions", horizon);
+    let form_data = [("tx", urlencoding::encode(envelope_xdr))];
+
+    let response = HTTP_CLIENT
+        .post(&url)
+        .form(&form_data)
+        .send()
+        .await
+        .with_context(|| "Failed to submit transaction to Horizon")?;
+
+    let status = response.status();
+    let body: serde_json::Value = response
+        .json()
+        .await
+        .unwrap_or_else(|_| serde_json::Value::Null);
+
+    if status == 200 {
+        return Ok(EnvelopeSubmitOutcome {
+            hash: json_string(&body, "hash").unwrap_or_else(|| "unknown".to_string()),
+            ledger: json_u64(&body, "ledger"),
+            successful: json_bool(&body, "successful").unwrap_or(true),
+            result_xdr: json_string(&body, "result_xdr"),
+        });
+    }
+
+    // Horizon reports a rejected transaction as an RFC 7807 problem document,
+    // with the decoded outcome under `extras`.
+    let extras = body.get("extras");
+    let title = json_string(&body, "title").unwrap_or_else(|| "Transaction failed".to_string());
+    let result_code = extras
+        .and_then(|e| e.get("result_codes"))
+        .and_then(|c| c.get("transaction"))
+        .and_then(|v| v.as_str());
+    let result_xdr = extras
+        .and_then(|e| e.get("result_xdr"))
+        .and_then(|v| v.as_str());
+    let detail = json_string(&body, "detail")
+        .or_else(|| result_code.map(str::to_string))
+        .unwrap_or_else(|| format!("Horizon returned status {}", status.as_u16()));
+    let mut message = format!("Transaction rejected: {title} - {detail}");
+    if let Some(xdr) = result_xdr {
+        message.push_str(&format!("\n  Result XDR: {xdr}"));
+    }
+    anyhow::bail!(message);
+}
+
+/// What Horizon reported for a submitted envelope.
+#[derive(Debug, Clone)]
+pub struct EnvelopeSubmitOutcome {
+    pub hash: String,
+    pub ledger: Option<u64>,
+    pub successful: bool,
+    pub result_xdr: Option<String>,
+}
+
+fn json_string(body: &serde_json::Value, key: &str) -> Option<String> {
+    body.get(key).and_then(|v| v.as_str()).map(str::to_string)
+}
+
+fn json_u64(body: &serde_json::Value, key: &str) -> Option<u64> {
+    body.get(key).and_then(|v| v.as_u64())
+}
+
+fn json_bool(body: &serde_json::Value, key: &str) -> Option<bool> {
+    body.get(key).and_then(|v| v.as_bool())
+}
+
 fn build_batch_transaction_xdr(
     source: &str,
     operations: &[BatchPaymentOp],
