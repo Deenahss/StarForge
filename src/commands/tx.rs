@@ -732,7 +732,9 @@ async fn handle_batch(args: BatchArgs) -> Result<()> {
         &args.network,
         args.yes,
         "batch transaction",
-    )?;
+    )?
+    .with_fee_stroops(tx_result.fee)
+    .for_non_contract();
 
     p::info("Submitting batch transaction…");
     let submit_result = horizon::submit_payment_with_signing(
@@ -957,7 +959,9 @@ async fn handle_send(args: SendArgs) -> Result<()> {
         &args.network,
         args.yes,
         "payment transaction",
-    )?;
+    )?
+    .with_fee_stroops(tx_result.fee)
+    .for_non_contract();
 
     p::info("Submitting transaction…");
     let submit_result = horizon::submit_payment_with_signing(

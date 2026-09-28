@@ -166,6 +166,42 @@ if they are absent from the `networks` map.
 
 ---
 
+## Per-wallet signing policies
+
+Each wallet may carry an independent policy, enforced immediately before local
+or hardware signing. Empty allowlists and an omitted fee cap leave that
+dimension unrestricted; `max_fee` is expressed in stroops. A configured fee
+cap requires a fee estimate at signing time, and an unavailable estimate blocks
+signing. `allowed_contracts` applies to contract transactions; deployments are
+blocked when the wallet has a contract allowlist because the new contract ID is
+not known before deployment.
+
+```toml
+[[wallets]]
+name = "mainnet-admin"
+public_key = "G..."
+network = "mainnet"
+created_at = "2026-09-28T00:00:00Z"
+funded = true
+allowed_networks = ["mainnet"]
+max_fee = 500000
+allowed_contracts = ["C..."]
+require_confirmation = true
+```
+
+`require_confirmation = true` always prompts at signing time, including when
+the command was started with `--yes`. Policy failures are written to the audit
+trail as `wallet_policy_violation` entries. Errors include one of these codes:
+
+| Code | Meaning |
+|---|---|
+| `WALLET_POLICY_NETWORK_DENIED` | Requested network is not allowlisted |
+| `WALLET_POLICY_FEE_EXCEEDED` | Estimated transaction fee exceeds `max_fee` |
+| `WALLET_POLICY_FEE_UNKNOWN` | A fee cap is set but no fee estimate is available |
+| `WALLET_POLICY_CONTRACT_DENIED` | Contract ID is not allowlisted |
+| `WALLET_POLICY_CONTRACT_UNKNOWN` | Contract target is missing while an allowlist is set |
+| `WALLET_POLICY_CONFIRMATION_DECLINED` | User declined the required signing confirmation |
+
 ## Migration note
 
 `validate_network_exists` used to fall back to loading the on-disk

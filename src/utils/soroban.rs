@@ -157,7 +157,17 @@ pub async fn invoke_contract(
     let simulation = simulate_transaction(contract_id, function, args, arg_types, network).await?;
     let transaction = match wallet {
         Some(w) => Some(
-            submit_transaction(contract_id, function, args, arg_types, network, w, signing).await?,
+            submit_transaction(
+                contract_id,
+                function,
+                args,
+                arg_types,
+                network,
+                w,
+                signing,
+                simulation.fee,
+            )
+            .await?,
         ),
         None => None,
     };
@@ -250,6 +260,7 @@ pub async fn submit_transaction(
     network: &str,
     wallet: &WalletEntry,
     signing: Option<&SigningRequest>,
+    fee_stroops: u64,
 ) -> Result<TransactionResult> {
     crate::utils::network_guard::verify(network).await?;
     let rpc_url = get_rpc_url(network)?;
@@ -258,8 +269,15 @@ pub async fn submit_transaction(
     let xdr_args = encode_arguments(args, arg_types)?;
 
     // Build and sign the transaction
-    let signed_tx_xdr =
-        build_and_sign_transaction(contract_id, function, &xdr_args, wallet, network, signing)?;
+    let signed_tx_xdr = build_and_sign_transaction(
+        contract_id,
+        function,
+        &xdr_args,
+        wallet,
+        network,
+        signing,
+        fee_stroops,
+    )?;
 
     // Build the submission request
     let request = SorobanRpcRequest {
@@ -550,10 +568,15 @@ fn build_and_sign_transaction(
     wallet: &WalletEntry,
     _network: &str,
     signing: Option<&SigningRequest>,
+    fee_stroops: u64,
 ) -> Result<String> {
     let tx_xdr = build_transaction_xdr(contract_id, function, args)?;
     if let Some(request) = signing {
-        return wallet_signer::sign_transaction_xdr(&tx_xdr, request);
+        let request = request
+            .clone()
+            .with_fee_stroops(fee_stroops)
+            .with_contract_id(contract_id);
+        return wallet_signer::sign_transaction_xdr(&tx_xdr, &request);
     }
 
     Ok(format!(
@@ -570,9 +593,15 @@ pub fn sign_deploy_transaction(
     wallet: &WalletEntry,
     network: &str,
     signing: &SigningRequest,
+    fee_stroops: Option<u64>,
 ) -> Result<String> {
     let tx_xdr = build_deploy_transaction_xdr(wasm_hash, wallet, network)?;
-    wallet_signer::sign_transaction_xdr(&tx_xdr, signing)
+    let request = match fee_stroops {
+        Some(fee) => signing.clone().with_fee_stroops(fee),
+        None => signing.clone(),
+    }
+    .for_contract_deploy();
+    wallet_signer::sign_transaction_xdr(&tx_xdr, &request)
 }
 
 fn build_deploy_transaction_xdr(

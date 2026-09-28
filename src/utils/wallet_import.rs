@@ -236,6 +236,12 @@ pub struct WalletBackupEntry {
     pub derivation_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mnemonic_wallet: Option<String>,
+    #[serde(default, skip_serializing_if = "is_default_wallet_policy")]
+    pub usage_policy: crate::utils::config::WalletUsagePolicy,
+}
+
+fn is_default_wallet_policy(policy: &crate::utils::config::WalletUsagePolicy) -> bool {
+    policy == &crate::utils::config::WalletUsagePolicy::default()
 }
 
 /// A parsed backup plus any non-fatal observations about it.
