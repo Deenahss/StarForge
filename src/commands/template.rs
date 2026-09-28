@@ -1,10 +1,10 @@
 use crate::utils::template_integration;
 use crate::utils::template_performance;
 use crate::utils::template_provenance;
-use crate::utils::template_security_scanner::{
-    scan_template_security, ScanLevel, TemplateSecurityScannerConfig,
+use crate::utils::{
+    dry_run::{self, DryRunPlan, PlannedOperation},
+    output, print as p, template_customization_ai, templates,
 };
-use crate::utils::{output, print as p, template_customization_ai, templates};
 use anyhow::{Context, Result};
 use clap::Subcommand;
 use colored::Colorize;
@@ -278,6 +278,11 @@ pub enum TemplateCacheCommands {
 }
 
 pub async fn handle(cmd: TemplateCommands) -> Result<()> {
+    if dry_run::is_enabled() {
+        if let Some(plan) = dry_run_plan(&cmd) {
+            return plan.emit(output::is_json_mode_enabled());
+        }
+    }
     match cmd {
         TemplateCommands::Install {
             path,
@@ -405,117 +410,201 @@ async fn handle_cache(cmd: TemplateCacheCommands) -> Result<()> {
     }
 }
 
-fn cache_list(json: bool) -> Result<()> {
-    let cached = templates::list_cached_templates()?;
-
-    if json {
-        println!("{}", serde_json::to_string_pretty(&cached)?);
-        return Ok(());
+/// Build the plan shown by `--dry-run` for a mutating `template` subcommand.
+///
+/// Searching, listing, showing, linting, info, testing, validating, auditing,
+/// and printing docs to stdout are read-only and return `None`.
+fn dry_run_plan(cmd: &TemplateCommands) -> Option<DryRunPlan> {
+    match cmd {
+        TemplateCommands::Install { path, name, sign, .. } => {
+            let target = name
+                .clone()
+                .unwrap_or_else(|| path.display().to_string());
+            Some(
+                DryRunPlan::new("template install", format!("Install template '{target}'"))
+                    .operation(
+                        PlannedOperation::new(
+                            "template.write",
+                            target.clone(),
+                            format!("would install template '{target}' into the local registry"),
+                        )
+                        .detail("Package", path.display().to_string())
+                        .detail("Sign with Sigstore", dry_run::yes_no(*sign)),
+                    )
+                    .writes_filesystem(),
+            )
+        }
+        TemplateCommands::Publish { path, name, sign, .. } => {
+            let target = name
+                .clone()
+                .unwrap_or_else(|| path.display().to_string());
+            Some(
+                DryRunPlan::new("template publish", format!("Publish template '{target}'"))
+                    .operation(
+                        PlannedOperation::new(
+                            "template.publish",
+                            target.clone(),
+                            format!("would publish template '{target}' to the local marketplace"),
+                        )
+                        .detail("Source", path.display().to_string())
+                        .detail("Sign with Sigstore", dry_run::yes_no(*sign)),
+                    )
+                    .writes_filesystem(),
+            )
+        }
+        TemplateCommands::Remove { name, purge } => Some(
+            DryRunPlan::new("template remove", format!("Remove template '{name}'"))
+                .operation(
+                    PlannedOperation::new(
+                        "template.remove",
+                        name.clone(),
+                        format!("would remove template '{name}' from the local marketplace"),
+                    )
+                    .detail("Purge cached files", dry_run::yes_no(*purge)),
+                )
+                .writes_filesystem(),
+        ),
+        TemplateCommands::New { name, output } => Some(
+            DryRunPlan::new(
+                "template new",
+                format!("Scaffold template authoring kit '{name}'"),
+            )
+            .operation(PlannedOperation::new(
+                "file.write",
+                output.display().to_string(),
+                format!("would scaffold a template authoring kit for '{name}'"),
+            ))
+            .writes_filesystem(),
+        ),
+        TemplateCommands::Fetch {
+            source,
+            name,
+            version,
+            force,
+            require_signed,
+        } => {
+            let mut operation = PlannedOperation::new(
+                "template.install",
+                name.clone().unwrap_or_else(|| source.clone()),
+                format!("would fetch and install a template from '{source}'"),
+            )
+            .detail("Overwrite existing", dry_run::yes_no(*force))
+            .detail("Require signature", dry_run::yes_no(*require_signed));
+            if let Some(version) = version {
+                operation = operation.detail("Version", version.clone());
+            }
+            Some(
+                DryRunPlan::new("template fetch", format!("Fetch template from '{source}'"))
+                    .operation(operation)
+                    .writes_filesystem(),
+            )
+        }
+        TemplateCommands::Update { name, all } => {
+            let target = if *all {
+                "all installed templates".to_string()
+            } else {
+                name.clone().unwrap_or_else(|| "installed templates".to_string())
+            };
+            Some(
+                DryRunPlan::new("template update", format!("Update {target}"))
+                    .operation(PlannedOperation::new(
+                        "template.update",
+                        target.clone(),
+                        format!("would update {target} to the latest available version"),
+                    ))
+                    .writes_filesystem(),
+            )
+        }
+        TemplateCommands::Rollback { name } => Some(
+            DryRunPlan::new(
+                "template rollback",
+                format!("Roll back template '{name}' to its previous state"),
+            )
+            .operation(
+                PlannedOperation::new(
+                    "template.rollback",
+                    name.clone(),
+                    format!("would restore the previously tracked state of '{name}'"),
+                )
+                .detail("Restore point", "last tracked update"),
+            )
+            .writes_filesystem(),
+        ),
+        TemplateCommands::Customize { path, requirements } => Some(
+            DryRunPlan::new(
+                "template customize",
+                format!("Customize template at {} using AI", path.display()),
+            )
+            .operation(PlannedOperation::new(
+                "template.write",
+                path.display().to_string(),
+                "would apply AI customization to the template",
+            ))
+            .warn(format!(
+                "Requirements preview: {}",
+                truncate_for_plan(requirements)
+            ))
+            .writes_filesystem(),
+        ),
+        TemplateCommands::CustomizeRollback { path, index } => Some(
+            DryRunPlan::new(
+                "template customize-rollback",
+                format!("Roll back customization for {}", path.display()),
+            )
+            .operation(
+                PlannedOperation::new(
+                    "template.rollback",
+                    path.display().to_string(),
+                    "would restore a previous customization state",
+                )
+                .detail(
+                    "Target index",
+                    index
+                        .as_ref()
+                        .map(|i| i.to_string())
+                        .unwrap_or_else(|| "previous".to_string()),
+                ),
+            )
+            .writes_filesystem(),
+        ),
+        TemplateCommands::Docs {
+            name,
+            output: Some(output),
+        } => Some(
+            DryRunPlan::new(
+                "template docs",
+                format!("Generate documentation for '{name}'"),
+            )
+            .operation(PlannedOperation::new(
+                "file.write",
+                output.display().to_string(),
+                format!("would write generated docs for '{name}'"),
+            ))
+            .writes_filesystem(),
+        ),
+        TemplateCommands::Search { .. }
+        | TemplateCommands::List { .. }
+        | TemplateCommands::Show { .. }
+        | TemplateCommands::Lint { .. }
+        | TemplateCommands::Info { .. }
+        | TemplateCommands::Test { .. }
+        | TemplateCommands::Validate { .. }
+        | TemplateCommands::Audit { .. }
+        | TemplateCommands::CustomizeHistory { .. }
+        | TemplateCommands::Docs { output: None, .. } => None,
     }
-
-    p::header("StarForge Local Template Cache");
-    let cache_dir = templates::template_cache_dir()?;
-    p::kv("Location", &cache_dir.display().to_string());
-    p::kv("Total templates", &cached.len().to_string());
-    p::separator();
-
-    if cached.is_empty() {
-        p::info("Cache is empty. Templates will be cached here when fetched or scaffolded.");
-        return Ok(());
-    }
-
-    let mut table = comfy_table::Table::new();
-    table.set_header(vec![
-        "Template",
-        "Version",
-        "Status",
-        "Digest",
-        "Cached At",
-        "Size",
-    ]);
-
-    for item in &cached {
-        let status_str = if item.is_valid {
-            "Valid".green().to_string()
-        } else {
-            let err = item
-                .verification_error
-                .as_deref()
-                .unwrap_or("Corrupted / Tampered");
-            format!("Tampered ({})", err).red().to_string()
-        };
-
-        let digest_short = if item.digest.len() >= 12 {
-            &item.digest[..12]
-        } else {
-            &item.digest
-        };
-
-        let size_str = format_cache_bytes(item.size_bytes);
-
-        table.add_row(vec![
-            item.name.clone(),
-            item.version.clone(),
-            status_str,
-            digest_short.to_string(),
-            item.cached_at.chars().take(19).collect::<String>(),
-            size_str,
-        ]);
-    }
-
-    println!("{table}");
-    Ok(())
 }
 
-fn format_cache_bytes(bytes: u64) -> String {
-    if bytes < 1024 {
-        format!("{} B", bytes)
-    } else if bytes < 1024 * 1024 {
-        format!("{:.1} KB", bytes as f64 / 1024.0)
-    } else {
-        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+/// Shorten a free-form string so it renders as a single readable plan warning.
+fn truncate_for_plan(value: &str) -> String {
+    const LIMIT: usize = 80;
+    let trimmed = value.trim();
+    if trimmed.chars().count() <= LIMIT {
+        return trimmed.to_string();
     }
-}
-
-fn cache_clear(name: Option<String>, all: bool, force: bool) -> Result<()> {
-    if name.is_none() && !all {
-        anyhow::bail!(
-            "Specify a template name with `--name <NAME>` or use `--all` to clear the entire cache."
-        );
-    }
-
-    let target_name = name.as_deref();
-    if !force {
-        let prompt = if let Some(n) = target_name {
-            format!("Remove cached template '{}'?", n)
-        } else {
-            "Clear all cached templates?".to_string()
-        };
-
-        if !dialoguer::Confirm::new()
-            .with_prompt(prompt)
-            .default(false)
-            .interact()?
-        {
-            p::info("Operation cancelled.");
-            return Ok(());
-        }
-    }
-
-    let count = templates::clear_cached_template(target_name)?;
-    if count == 0 {
-        if let Some(n) = target_name {
-            p::warn(&format!("No cache entry found for '{}'.", n));
-        } else {
-            p::info("Template cache was already empty.");
-        }
-    } else if let Some(n) = target_name {
-        p::success(&format!("Cleared cached template '{}'.", n));
-    } else {
-        p::success(&format!("Cleared {} cached template(s).", count));
-    }
-
-    Ok(())
+    let mut shortened: String = trimmed.chars().take(LIMIT).collect();
+    shortened.push('…');
+    shortened
 }
 
 // Not currently called from any code path in this crate. Kept rather than

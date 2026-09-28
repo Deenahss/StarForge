@@ -92,6 +92,7 @@ pub mod doc_publisher;
 pub mod doc_templates;
 pub mod docs;
 pub mod documentation;
+pub mod dry_run;
 pub mod environment;
 pub mod errors;
 pub mod event_monitoring;
