@@ -7,6 +7,9 @@ use dialoguer::{theme::ColorfulTheme, Confirm, Input, Select};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// Templates generated directly by the `new` command without a registry fetch.
+pub const BUILTIN_TEMPLATE_NAMES: &[&str] = &["hello-world", "token", "voting", "nft"];
+
 #[derive(Subcommand)]
 pub enum NewCommands {
     /// Scaffold a new Soroban smart contract project
@@ -227,10 +230,7 @@ async fn scaffold_contract(
     println!("  Template: {}\n", template.cyan());
     // Built-in templates are generated in-process below and always match this
     // binary; only registry templates carry version metadata to check.
-    let is_builtin = matches!(
-        template.as_str(),
-        "hello-world" | "token" | "voting" | "nft"
-    );
+    let is_builtin = BUILTIN_TEMPLATE_NAMES.contains(&template.as_str());
     if !is_builtin {
         // Ensure selected template is compatible with current CLI version
         let entry = templates::get_template(&template).await?;
