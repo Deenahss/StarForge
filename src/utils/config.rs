@@ -720,6 +720,12 @@ pub struct WalletEntry {
     pub kdf_options: Option<crypto::KdfOptions>,
     #[serde(default)]
     pub rotation_history: Vec<WalletRotationRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub derivation_index: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub derivation_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mnemonic_wallet: Option<String>,
 }
 
 impl WalletEntry {
@@ -1274,7 +1280,8 @@ pub fn config_dir() -> PathBuf {
 /// matches the real home, so the resolved path is identical to
 /// `dirs::home_dir()`.
 fn resolve_home_dir() -> PathBuf {
-    if let Some(home) = std::env::var_os("USERPROFILE")
+    if let Some(home) = std::env::var_os("STARFORGE_HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
         .or_else(|| std::env::var_os("HOME"))
         .filter(|v| !v.is_empty())
     {

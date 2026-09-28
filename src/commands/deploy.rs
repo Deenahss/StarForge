@@ -78,6 +78,13 @@ pub struct DeployArgs {
     /// Comma-separated checklist item ids satisfied for this deploy (see deploy policy)
     #[arg(long, value_delimiter = ',')]
     pub checklist: Option<Vec<String>>,
+    /// Human-readable note explaining why this deployment is happening;
+    /// persisted with the deployment history record for auditability
+    #[arg(long)]
+    pub note: Option<String>,
+    /// Change-log snippet attached to this deployment's history record
+    #[arg(long)]
+    pub changelog: Option<String>,
 }
 
 /// Extract a Soroban contract id (56-char `C…` strkey) from CLI stdout/stderr.
@@ -412,6 +419,10 @@ async fn run_dry_run(
 
 pub async fn handle(args: DeployArgs) -> Result<()> {
     let emit_json = args.json || output::is_json_mode_enabled();
+    // Unify the subcommand's own `--dry-run` with the global one so either
+    // placement (`starforge --dry-run deploy` or `starforge deploy --dry-run`)
+    // behaves identically. See docs/DRY_RUN_SEMANTICS.md.
+    let dry_run = args.dry_run || crate::utils::dry_run::is_enabled();
     if emit_json {
         #[derive(serde::Serialize)]
         struct DeployResponse {
@@ -436,7 +447,7 @@ pub async fn handle(args: DeployArgs) -> Result<()> {
             wasm: args.wasm.display().to_string(),
             network: args.network.clone(),
             wallet: wallet_name.clone(),
-            dry_run: args.dry_run,
+            dry_run,
             execute: args.execute,
             simulated: args.simulate,
             success: true,
@@ -459,7 +470,14 @@ pub async fn handle(args: DeployArgs) -> Result<()> {
     let mut wasm_bytes = fs::read(&wasm_path)?;
     let mut wasm_size_kb = wasm_bytes.len() as f64 / 1024.0;
 
-    if args.optimize {
+    if args.optimize && dry_run {
+        // A dry run must not touch the filesystem: report the planned
+        // optimization without writing the optimized artifact (#943).
+        p::header("WASM Optimization");
+        p::kv("Input WASM", &args.wasm.display().to_string());
+        p::info("Dry-run: optimization is planned but no optimized artifact is written.");
+        p::separator();
+    } else if args.optimize {
         let optimized_path = args.wasm.with_file_name(format!(
             "{}-optimized.wasm",
             args.wasm.file_stem().unwrap_or_default().to_string_lossy()
@@ -531,6 +549,21 @@ pub async fn handle(args: DeployArgs) -> Result<()> {
     p::separator();
 
     let wasm_hash = compute_local_wasm_hash(&wasm_bytes);
+
+    // ── Deploy policy + pre-flight inputs ─────────────────────────────
+    // Organization deploy policy: an explicit `--policy` file, or an
+    // auto-discovered `starforge-deploy-policy.toml` in the current
+    // directory. Loading a configured policy that fails to parse is fatal.
+    let policy_path = match args.policy.clone() {
+        Some(path) => Some(path),
+        None => deploy_policy::discover_policy_file(std::path::Path::new(".")),
+    };
+    let org_deploy_policy = policy_path
+        .as_ref()
+        .map(|path| deploy_policy::load_policy(path))
+        .transpose()?;
+    let wasm_policy = wasm_preflight::WasmPolicy::default();
+    let mut completed_checklist: Vec<String> = Vec::new();
 
     // ── AI-driven compliance checks (regulatory, security, best practices) ─
     if args.compliance {
@@ -685,7 +718,7 @@ pub async fn handle(args: DeployArgs) -> Result<()> {
     }
 
     // --dry-run: validate everything and print deployment plan, then exit.
-    if args.dry_run {
+    if dry_run {
         return run_dry_run(
             &wasm_path,
             &wasm_bytes,
@@ -723,13 +756,23 @@ pub async fn handle(args: DeployArgs) -> Result<()> {
 
     // Enforce organization deploy policy when configured
     if let (Some(path), Some(policy)) = (&policy_path, &org_deploy_policy) {
-        let checklist_override = if completed_checklist.is_empty() {
-            None
-        } else {
-            Some(completed_checklist.clone())
+        // CLI-provided checklist items take precedence; auto-derived items
+        // (e.g. `wasm_clean_analysis`) are merged in rather than dropped.
+        let checklist_override = match &args.checklist {
+            None if completed_checklist.is_empty() => None,
+            None => Some(completed_checklist.clone()),
+            Some(cli_items) => {
+                let mut items = completed_checklist.clone();
+                for item in cli_items {
+                    if !items.iter().any(|known| known == item) {
+                        items.push(item.clone());
+                    }
+                }
+                Some(items)
+            }
         };
         let context = deploy_policy::DeployContext::from_env(&args.network, args.execute)
-            .with_overrides(None, args.checklist.clone());
+            .with_overrides(None, checklist_override);
         deploy_policy::enforce(path, &policy, &context)?;
     }
 
@@ -861,7 +904,8 @@ pub async fn handle(args: DeployArgs) -> Result<()> {
             &args.network,
             &wallet.name,
             previous.as_ref().map(|p| p.id.clone()),
-        );
+        )
+        .with_annotation(args.note.clone(), args.changelog.clone());
         let record_id = record_deployment(record)?;
 
         let deploy_args = build_stellar_deploy_args(&wasm_path, &wallet.public_key, &args.network);
@@ -939,6 +983,12 @@ pub async fn handle(args: DeployArgs) -> Result<()> {
 
         p::success("Deployment executed successfully!");
         p::kv("Recorded deployment", &record_id[..8.min(record_id.len())]);
+        if let Some(ref note) = args.note {
+            p::kv("Note", note);
+        }
+        if let Some(ref changelog) = args.changelog {
+            p::kv("Changelog", changelog);
+        }
         println!("{}", stdout);
     } else {
         p::info("Dry-run complete. Use --execute to deploy for real.");

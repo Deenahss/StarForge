@@ -29,6 +29,89 @@ pub enum ContractCommands {
     Deps(DepsArgs),
     /// Track contract versions, resolve conflicts, and manage migrations
     Version(VersionArgs),
+
+    // ── Commands moved under `contract` by ADR 0007 ──────────────────────
+    // Each moved command keeps its own argument struct, so no flag definition
+    // is duplicated here; `handle` forwards to the owning module.
+    /// Deep contract storage inspection (state, key, storage)
+    #[command(subcommand)]
+    Storage(crate::commands::inspect::InspectCommands),
+    /// Debug Soroban contracts with breakpoints, stepping, and inspection
+    #[command(subcommand)]
+    Debug(crate::commands::debug::DebugCommands),
+    /// Interactive REPL for local Soroban contract testing
+    Repl {
+        #[command(flatten)]
+        args: crate::commands::shell::ShellArgs,
+    },
+    /// Contract testing utilities for Soroban wasm
+    Test {
+        #[command(flatten)]
+        args: crate::commands::test::TestArgs,
+    },
+    /// Run a comprehensive security audit on a Soroban contract
+    Audit {
+        #[command(flatten)]
+        args: crate::commands::audit::AuditArgs,
+    },
+    /// Security hardening, validation, and monitoring
+    #[command(subcommand)]
+    Security(crate::commands::security::SecurityCommands),
+    /// Contract upgrade governance (proposals, voting, timelock, audit)
+    #[command(subcommand)]
+    Governance(crate::commands::governance::GovernanceCommands),
+    /// Contract upgrade management (propose, approve, execute, rollback)
+    #[command(subcommand)]
+    Upgrade(crate::commands::upgrade::UpgradeCommands),
+    /// Run formal verification on a contract
+    #[command(subcommand)]
+    Verify(crate::commands::verify::VerifyCommands),
+    /// Contract storage migration tools (transform, validate, rollback)
+    #[command(subcommand)]
+    Migrate(crate::commands::migrate::MigrateCommands),
+    /// Generate smart contracts from natural language prompts
+    #[command(subcommand)]
+    Generate(crate::commands::generate::GenerateCommands),
+    /// Smart contract completion assistant
+    #[command(subcommand)]
+    Complete(crate::commands::complete::CompleteCommands),
+    /// Analyze and explain smart contract code using AI
+    #[command(subcommand)]
+    Explain(crate::commands::explain::ExplainCommands),
+    /// Static analysis and linting for Soroban contracts
+    Lint {
+        #[command(flatten)]
+        args: crate::commands::lint::LintArgs,
+    },
+    /// Analyse and optimize compiled WASM / Rust contract source for gas and size
+    #[command(subcommand)]
+    Optimize(crate::commands::optimize::OptimizeCommands),
+    /// Gas analysis and optimization helpers
+    #[command(subcommand)]
+    Gas(crate::commands::gas::GasCommands),
+    /// Contract performance monitoring and metrics dashboard
+    #[command(subcommand)]
+    Metrics(crate::commands::perf::PerfCommands),
+    /// Advanced contract performance analysis and profiling tools
+    #[command(subcommand)]
+    Profile(crate::commands::perf::AdvancedPerfCommands),
+    /// Performance benchmarking utilities and industry-standard comparisons
+    #[command(subcommand)]
+    Benchmark(crate::commands::benchmark::BenchmarkCommands),
+    /// Contract documentation portal (generate, view, search)
+    #[command(subcommand)]
+    Docs(crate::commands::docs::DocsCommands),
+    /// AI mutation testing for Soroban contracts
+    #[command(subcommand)]
+    Mutate(crate::commands::mutate::MutateCommands),
+    /// Live monitoring (contract events or wallet threshold)
+    Monitor {
+        #[command(flatten)]
+        args: crate::commands::monitor::MonitorArgs,
+    },
+    /// Contract health monitoring and alerting
+    #[command(subcommand)]
+    Health(crate::commands::contract_monitor::ContractMonitorCommands),
 }
 
 #[derive(Args)]
@@ -321,6 +404,31 @@ pub async fn handle(cmd: ContractCommands) -> Result<()> {
         ContractCommands::CallGraph(args) => handle_call_graph(args),
         ContractCommands::Deps(args) => handle_deps(args),
         ContractCommands::Version(args) => handle_version(args).await,
+
+        // ADR 0007: forward the commands that moved under `contract`.
+        ContractCommands::Storage(cmd) => crate::commands::inspect::handle(cmd).await,
+        ContractCommands::Debug(cmd) => crate::commands::debug::handle(cmd).await,
+        ContractCommands::Repl { args } => crate::commands::shell::handle(args).await,
+        ContractCommands::Test { args } => crate::commands::test::handle(args).await,
+        ContractCommands::Audit { args } => crate::commands::audit::handle(args).await,
+        ContractCommands::Security(cmd) => crate::commands::security::handle(cmd).await,
+        ContractCommands::Governance(cmd) => crate::commands::governance::handle(cmd).await,
+        ContractCommands::Upgrade(cmd) => crate::commands::upgrade::handle(cmd).await,
+        ContractCommands::Verify(cmd) => crate::commands::verify::handle(cmd).await,
+        ContractCommands::Migrate(cmd) => crate::commands::migrate::handle(cmd),
+        ContractCommands::Generate(cmd) => crate::commands::generate::handle(&cmd).await,
+        ContractCommands::Complete(cmd) => crate::commands::complete::handle(cmd).await,
+        ContractCommands::Explain(cmd) => crate::commands::explain::handle(&cmd).await,
+        ContractCommands::Lint { args } => crate::commands::lint::handle(args).await,
+        ContractCommands::Optimize(cmd) => crate::commands::optimize::handle(cmd).await,
+        ContractCommands::Gas(cmd) => crate::commands::gas::handle(cmd).await,
+        ContractCommands::Metrics(cmd) => crate::commands::perf::handle(cmd).await,
+        ContractCommands::Profile(cmd) => crate::commands::perf::handle_advanced(cmd).await,
+        ContractCommands::Benchmark(cmd) => crate::commands::benchmark::handle(cmd).await,
+        ContractCommands::Docs(cmd) => crate::commands::docs::handle(cmd).await,
+        ContractCommands::Mutate(cmd) => crate::commands::mutate::handle(cmd).await,
+        ContractCommands::Monitor { args } => crate::commands::monitor::handle(args).await,
+        ContractCommands::Health(cmd) => crate::commands::contract_monitor::handle(cmd).await,
     }
 }
 
@@ -777,7 +885,7 @@ async fn handle_invoke(args: InvokeArgs) -> Result<()> {
             args.hardware,
             Some(&args.hd_path),
             &args.network,
-            false,
+            true, // skip immediate hardware confirmation, do it after simulation
             "contract invocation",
         )?;
         (Some(wallet.clone()), Some(signing))
@@ -801,8 +909,8 @@ async fn handle_invoke(args: InvokeArgs) -> Result<()> {
         &args.args,
         &arg_types,
         &args.network,
-        submit_wallet.as_ref(),
-        signing_request.as_ref(),
+        None,
+        None,
     )
     .await?;
 
@@ -825,13 +933,88 @@ async fn handle_invoke(args: InvokeArgs) -> Result<()> {
         }
     }
 
-    if let Some(tx_result) = outcome.transaction {
+    if args.submit {
+        let submit_wallet_ref = submit_wallet.as_ref().unwrap();
+        
+        let risk_level = if args.network == "mainnet" {
+            crate::utils::confirmation::RiskLevel::High
+        } else {
+            crate::utils::confirmation::RiskLevel::Medium
+        };
+
+        let mut summary = crate::utils::confirmation::OperationSummary::new(
+            if args.hardware.is_some() {
+                "Hardware Wallet — Invoke Contract".to_string()
+            } else {
+                "Invoke Contract Function".to_string()
+            },
+            args.network.clone(),
+            risk_level,
+        )
+        .add("Contract ID", &args.contract_id)
+        .add("Function", &args.function)
+        .add(
+            "Wallet",
+            if args.hardware.is_some() {
+                format!("{} (Hardware)", submit_wallet_ref.name)
+            } else {
+                submit_wallet_ref.name.clone()
+            },
+        )
+        .add(
+            "Estimated Fee",
+            format!("{} stroops", simulation_result.fee),
+        )
+        .add("Return Value", &simulation_result.return_value)
+        .with_auth_trees(simulation_result.auth.clone());
+
+        if args.hardware.is_some() {
+            summary = summary.add("Next step", "Review and approve on your device screen");
+        }
+
+        let confirm_config = crate::utils::confirmation::ConfirmationConfig {
+            risk_level,
+            network: args.network.clone(),
+            skip_confirm: false,
+            dry_run: false,
+            prompt: if args.hardware.is_some() {
+                Some("Proceed with hardware wallet signing?".to_string())
+            } else {
+                Some("Submit this transaction?".to_string())
+            },
+            require_type_confirmation: args.network == "mainnet",
+            ..Default::default()
+        };
+
+        if !crate::utils::confirmation::confirm_operation(&summary, &confirm_config)? {
+            anyhow::bail!("Transaction submission cancelled.");
+        }
+
+        if let Some(kind) = args.hardware {
+            p::info(&format!(
+                "Connect your {} and approve the invocation on the device screen.",
+                kind
+            ));
+        }
+
         println!();
         p::step(2, 2, "Submitting transaction…");
+        
+        let tx_result = soroban::submit_transaction(
+            &args.contract_id,
+            &args.function,
+            &args.args,
+            &arg_types,
+            &args.network,
+            submit_wallet_ref,
+            signing_request.as_ref(),
+        )
+        .await?;
+
         p::kv_accent("Transaction", "✓ Submitted");
         p::kv("TX Hash", &tx_result.hash);
         p::kv("Return Value", &tx_result.return_value);
-    } else if !args.submit {
+    } else {
         println!();
         p::info("Simulation complete. Add --submit to execute the transaction.");
     }

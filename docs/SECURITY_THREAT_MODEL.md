@@ -25,7 +25,9 @@ asset and boundary below in their design or pull request.
 We defend against a malicious local process or plugin, a compromised or
 typosquatted marketplace source, a network attacker, a malicious RPC response,
 and an attacker who obtains a stale cache or backup. Users may also
-accidentally approve unsafe commands or disclose secrets through prompts.
+accidentally approve unsafe commands or disclose secrets through prompts. The
+browser-wallet handoff adds a hostile-local-page, DNS-rebinding, and nonce-replay
+adversary.
 
 ## Trust boundaries and controls
 
