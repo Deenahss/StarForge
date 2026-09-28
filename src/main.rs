@@ -184,6 +184,10 @@ enum Commands {
     #[command(external_subcommand)]
     External(Vec<String>),
 
+    /// Manage per-network contract and account aliases
+    #[command(subcommand)]
+    Alias(commands::alias::AliasCommands),
+
     /// Terminal User Interface for wallets, contracts, and transactions
     #[cfg(feature = "ui")]
     Ui(commands::ui::UiArgs),
@@ -327,6 +331,13 @@ async fn run() {
         Commands::Man(_) => "man",
         Commands::Autocomplete { .. } => "autocomplete",
         Commands::External(_) => "external",
+        Commands::Verify(_) => "verify",
+        Commands::Help(_) => "help",
+        Commands::AiTelemetry(_) => "ai-telemetry",
+        Commands::Optimize(_) => "optimize",
+        Commands::AiSecurityTraining(_) => "ai-security-training",
+        Commands::ContractMonitor(_) => "contract-monitor",
+        Commands::Alias(_) => "alias",
         #[cfg(feature = "ui")]
         Commands::Ui(_) => "ui",
     }
@@ -388,6 +399,12 @@ async fn run() {
             .await
         }
         Commands::External(args) => handle_external_plugin(args),
+        Commands::Help(args) => commands::help::handle(args).await,
+        Commands::AiTelemetry(cmd) => commands::ai_telemetry::handle(cmd).await,
+        Commands::Optimize(cmd) => commands::optimize::handle(cmd).await,
+        Commands::AiSecurityTraining(cmd) => commands::ai_security_training::handle(cmd).await,
+        Commands::ContractMonitor(cmd) => commands::contract_monitor::handle(cmd).await,
+        Commands::Alias(cmd) => commands::alias::handle(cmd).await,
         #[cfg(feature = "ui")]
         Commands::Ui(args) => commands::ui::handle(args).await,
     };

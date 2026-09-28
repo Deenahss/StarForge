@@ -66,9 +66,21 @@ enum Commands {
         about = "Smart autocomplete — suggest and record commands",
         hide = true
     )]
-    Autocomplete,
-    #[command(external_subcommand)]
-    External(Vec<String>),
+    Help,
+    #[command(about = "AI usage telemetry and analytics: calls, tokens, latency, cost, opt-out")]
+    AiTelemetry,
+    #[command(
+        about = "Analyse and optimize compiled WASM / Rust contract source for gas and size"
+    )]
+    Optimize,
+    #[command(about = "AI-driven security training: lessons, exercises, progress tracking")]
+    AiSecurityTraining,
+    #[command(
+        about = "Contract health monitoring, performance tracking, security events, alerting, and dashboard"
+    )]
+    ContractMonitor,
+    #[command(about = "Manage per-network contract and account aliases")]
+    Alias,
 }
 
 /// The acceptance criterion from issue #936: top-level `--help` shows at most
