@@ -86,6 +86,7 @@ impl ProjectLockfile {
             feature_flags: self.feature_flags.clone(),
             ai_telemetry: self.ai_telemetry.clone(),
             plugin_trust: self.plugin_trust.clone(),
+            event_sinks: self.event_sinks.clone(),
             networks: self.networks.clone(),
             wallets: Vec::new(),
         }

@@ -263,6 +263,23 @@ async fn scaffold_contract(
                 ));
                 return Ok(());
             }
+            templates::CompatibilityStatus::SorobanSdkIncompatible {
+                sdk_min,
+                sdk_max,
+                found_version,
+            } => {
+                let range = match (sdk_min, sdk_max) {
+                    (Some(min), Some(max)) => format!(">= {} and <= {}", min, max),
+                    (Some(min), None) => format!(">= {}", min),
+                    (None, Some(max)) => format!("<= {}", max),
+                    (None, None) => "compatible".to_string(),
+                };
+                p::error(&format!(
+                    "Template '{}' requires Soroban SDK {} but running version is {}.\nChoose a compatible template or adjust SDK version.",
+                    entry.name, range, found_version
+                ));
+                return Ok(());
+            }
         }
     }
 
