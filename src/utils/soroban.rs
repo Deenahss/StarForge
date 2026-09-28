@@ -33,6 +33,14 @@ static HTTP_CLIENT: Lazy<Client> = Lazy::new(|| {
 static RPC_BUDGET_MANAGER: Lazy<Mutex<RpcBudgetManager>> = 
     Lazy::new(|| Mutex::new(RpcBudgetManager::new()));
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthNode {
+    pub contract_id: String,
+    pub function: String,
+    pub args: Vec<String>,
+    pub sub_invocations: Vec<AuthNode>,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SimulationResult {
     pub return_value: String,
@@ -48,6 +56,8 @@ pub struct SimulationResult {
     /// in that case the reason is appended to `errors`.
     #[serde(default)]
     pub resources: Option<SimulationResources>,
+    #[serde(default)]
+    pub auth: Vec<AuthNode>,
 }
 
 impl SimulationResult {
@@ -147,7 +157,17 @@ pub async fn invoke_contract(
     let simulation = simulate_transaction(contract_id, function, args, arg_types, network).await?;
     let transaction = match wallet {
         Some(w) => Some(
-            submit_transaction(contract_id, function, args, arg_types, network, w, signing).await?,
+            submit_transaction(
+                contract_id,
+                function,
+                args,
+                arg_types,
+                network,
+                w,
+                signing,
+                simulation.fee,
+            )
+            .await?,
         ),
         None => None,
     };
@@ -188,6 +208,28 @@ pub async fn simulate_transaction(
     build_simulation_result(&result)
 }
 
+/// Runs `simulateTransaction` against an envelope exactly as supplied.
+///
+/// Unlike [`simulate_transaction`] the caller owns the XDR, which is what makes
+/// `tx decode | tx simulate` work for blobs produced elsewhere. The raw RPC
+/// result is returned undecoded so the caller can show resources, auth
+/// requirements and host function results as the network reported them.
+pub async fn simulate_envelope(envelope_xdr: &str, network: &str) -> Result<serde_json::Value> {
+    let rpc_url = get_rpc_url(network)?;
+    let request = SorobanRpcRequest {
+        jsonrpc: "2.0".to_string(),
+        id: 1,
+        method: "simulateTransaction".to_string(),
+        params: serde_json::json!({
+            "transaction": envelope_xdr,
+        }),
+    };
+
+    rpc_request_with_url(&rpc_url, request)
+        .await
+        .context("Simulation request failed")
+}
+
 pub async fn simulate_deploy_transaction(
     wasm_hash: &str,
     network: &str,
@@ -218,6 +260,7 @@ pub async fn submit_transaction(
     network: &str,
     wallet: &WalletEntry,
     signing: Option<&SigningRequest>,
+    fee_stroops: u64,
 ) -> Result<TransactionResult> {
     crate::utils::network_guard::verify(network).await?;
     let rpc_url = get_rpc_url(network)?;
@@ -226,8 +269,15 @@ pub async fn submit_transaction(
     let xdr_args = encode_arguments(args, arg_types)?;
 
     // Build and sign the transaction
-    let signed_tx_xdr =
-        build_and_sign_transaction(contract_id, function, &xdr_args, wallet, network, signing)?;
+    let signed_tx_xdr = build_and_sign_transaction(
+        contract_id,
+        function,
+        &xdr_args,
+        wallet,
+        network,
+        signing,
+        fee_stroops,
+    )?;
 
     // Build the submission request
     let request = SorobanRpcRequest {
@@ -518,10 +568,15 @@ fn build_and_sign_transaction(
     wallet: &WalletEntry,
     _network: &str,
     signing: Option<&SigningRequest>,
+    fee_stroops: u64,
 ) -> Result<String> {
     let tx_xdr = build_transaction_xdr(contract_id, function, args)?;
     if let Some(request) = signing {
-        return wallet_signer::sign_transaction_xdr(&tx_xdr, request);
+        let request = request
+            .clone()
+            .with_fee_stroops(fee_stroops)
+            .with_contract_id(contract_id);
+        return wallet_signer::sign_transaction_xdr(&tx_xdr, &request);
     }
 
     Ok(format!(
@@ -538,9 +593,15 @@ pub fn sign_deploy_transaction(
     wallet: &WalletEntry,
     network: &str,
     signing: &SigningRequest,
+    fee_stroops: Option<u64>,
 ) -> Result<String> {
     let tx_xdr = build_deploy_transaction_xdr(wasm_hash, wallet, network)?;
-    wallet_signer::sign_transaction_xdr(&tx_xdr, signing)
+    let request = match fee_stroops {
+        Some(fee) => signing.clone().with_fee_stroops(fee),
+        None => signing.clone(),
+    }
+    .for_contract_deploy();
+    wallet_signer::sign_transaction_xdr(&tx_xdr, &request)
 }
 
 fn build_deploy_transaction_xdr(
@@ -607,13 +668,63 @@ fn build_simulation_result(result: &serde_json::Value) -> Result<SimulationResul
         }
     };
 
+    let auth = extract_auth(result).unwrap_or_default();
+
     Ok(SimulationResult {
         return_value: decode_return_value(result)?,
         fee: extract_fee(resources.as_ref()),
         events: extract_events(result)?,
         errors,
         resources,
+        auth,
     })
+}
+
+fn extract_auth(result: &serde_json::Value) -> Result<Vec<AuthNode>> {
+    use stellar_xdr::curr::{ReadXdr, SorobanAuthorizationEntry};
+
+    let mut auth_trees = Vec::new();
+
+    if let Some(results) = result.get("results").and_then(|r| r.as_array()) {
+        for res in results {
+            if let Some(auth_array) = res.get("auth").and_then(|a| a.as_array()) {
+                for auth_entry_val in auth_array {
+                    if let Some(auth_b64) = auth_entry_val.as_str() {
+                        if let Ok(entry) = SorobanAuthorizationEntry::from_xdr_base64(auth_b64, stellar_xdr::curr::Limits::none()) {
+                            auth_trees.push(parse_auth_invocation(&entry.root_invocation));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(auth_trees)
+}
+
+fn parse_auth_invocation(inv: &stellar_xdr::curr::SorobanAuthorizedInvocation) -> AuthNode {
+    use stellar_xdr::curr::SorobanAuthorizedFunction;
+
+    let (contract_id, function, args) = match &inv.function {
+        SorobanAuthorizedFunction::ContractFn(call) => {
+            let contract_id = format_scaddress(&call.contract_address);
+            let function = call.function_name.to_utf8_string_lossy();
+            let args = call.args.iter().map(format_scval).collect();
+            (contract_id, function, args)
+        }
+        _ => {
+            ("Host".to_string(), "CreateContract".to_string(), vec![])
+        }
+    };
+
+    let sub_invocations = inv.sub_invocations.iter().map(parse_auth_invocation).collect();
+
+    AuthNode {
+        contract_id,
+        function,
+        args,
+        sub_invocations,
+    }
 }
 
 fn extract_events(result: &serde_json::Value) -> Result<Vec<String>> {

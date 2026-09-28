@@ -17,14 +17,16 @@ Before opening a pull request, confirm each item:
 - [ ] `starforge template validate templates/registry.json` reports no problems
 - [ ] `security_review` field is present (status `"pending"` is acceptable for new submissions)
 - [ ] `changelog` field has at least one entry for the initial version
-- [ ] License is declared via the `license` field (MIT or Apache-2.0 preferred)
+- [ ] A non-empty `LICENSE` file is included at the template root
+- [ ] `template.json` declares an exact SPDX `license` identifier matching the CLI `--license` value
+- [ ] `template.json` includes a non-empty `authors` field or `attribution` field
 - [ ] `TEMPLATE_CONTRIBUTING.md` checklist items have all been addressed
 
 ## Template authoring kit
 
 Create a starter template with `starforge template new my-template --output ./templates/examples`. It generates `template.json`, `README.md`, `Cargo.toml`, `src/lib.rs`, and `tests/fixture.json`.
 
-Lint the template with `starforge template lint ./templates/examples/my-template`. This checks the registry schema, declared license, and security scanner.
+Lint the template with `starforge template lint ./templates/examples/my-template`. This checks the registry schema, SPDX license and license file, attribution metadata, and security scanner. Publishing applies the same legal metadata checks before writing to the marketplace.
 
 Test the template with `starforge template test my-template`. The command reads `tests/fixture.json`, renders the template using the sample inputs, and runs `cargo test` on the rendered project.
 
@@ -116,6 +118,8 @@ Below is the minimum required shape:
   "version": "1.0.0",
   "description": "One-line description of what the contract does",
   "author": "Your Name",
+  "authors": ["Your Name"],
+  "attribution": "Copyright (c) 2026 Your Name",
   "tags": ["defi", "my-category"],
   "source": { "type": "builtin", "id": "my-template" },
   "created_at": "2025-01-01T00:00:00Z",
@@ -137,6 +141,12 @@ Below is the minimum required shape:
 }
 ```
 
+Include the matching license text in a non-empty `LICENSE` file at the
+template root. `license` must be an exact SPDX license identifier, not a
+license expression. For attribution, provide either a non-empty `authors`
+string/list or a non-empty `attribution` string. If you pass `--license` when
+publishing, it must exactly match the manifest value.
+
 ### Field reference
 
 | Field | Required | Description |
@@ -147,7 +157,8 @@ Below is the minimum required shape:
 | `author` | ✓ | Author name or GitHub handle |
 | `tags` | ✓ | At least one tag from the [tag taxonomy](#tag-taxonomy) |
 | `source` | ✓ | `builtin`, `git`, or `local` source descriptor |
-| `license` | recommended | SPDX identifier (`MIT`, `Apache-2.0`, …) |
+| `license` | required for publish | Exact SPDX license identifier (`MIT`, `Apache-2.0`, …) |
+| `authors` or `attribution` | required for publish | Non-empty author list/string or attribution statement |
 | `security_review` | recommended | Audit status — `pending` is fine initially |
 | `changelog` | recommended | At least one entry |
 | `maintenance` | recommended | `active`, `maintained`, `deprecated`, or `unknown` |

@@ -102,6 +102,13 @@ pub fn validate_network(network: &str) -> Result<()> {
 
 /// Validates a Stellar secret key or encrypted bundle.
 pub fn validate_secret_key(secret: &str) -> Result<()> {
+    // A `keychain:<key>` value is a reference to an OS-keychain entry created
+    // by `starforge wallet migrate --to keychain`, not the secret itself.
+    // Accept it here so a migrated configuration still validates.
+    if crate::utils::keychain::is_secret_reference(secret) {
+        return Ok(());
+    }
+
     if secret.contains(':') {
         let parts: Vec<&str> = secret.split(':').collect();
 
@@ -272,6 +279,28 @@ pub fn validate_config(cfg: &Config) -> Result<()> {
             validate_secret_key(secret)?;
         }
         validate_network_exists(cfg, &wallet.network)?;
+        for network in &wallet.usage_policy.allowed_networks {
+            if network.trim().is_empty() {
+                anyhow::bail!(
+                    "Wallet '{}' has an empty allowed_networks entry",
+                    wallet.name
+                );
+            }
+            validate_network_exists(cfg, network).with_context(|| {
+                format!(
+                    "Wallet '{}' has an invalid allowed_networks entry",
+                    wallet.name
+                )
+            })?;
+        }
+        for contract_id in &wallet.usage_policy.allowed_contracts {
+            validate_contract_id(contract_id).with_context(|| {
+                format!(
+                    "Wallet '{}' has an invalid allowed_contracts entry",
+                    wallet.name
+                )
+            })?;
+        }
         if !seen_wallets.insert(wallet.name.as_str()) {
             anyhow::bail!(
                 "Duplicate wallet name '{}': wallet names must be unique",
@@ -713,6 +742,30 @@ pub struct WalletEntry {
     pub kdf_options: Option<crypto::KdfOptions>,
     #[serde(default)]
     pub rotation_history: Vec<WalletRotationRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub derivation_index: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub derivation_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mnemonic_wallet: Option<String>,
+    #[serde(flatten)]
+    pub usage_policy: WalletUsagePolicy,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct WalletUsagePolicy {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_networks: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_fee: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_contracts: Vec<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub require_confirmation: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 impl WalletEntry {
@@ -1267,7 +1320,8 @@ pub fn config_dir() -> PathBuf {
 /// matches the real home, so the resolved path is identical to
 /// `dirs::home_dir()`.
 fn resolve_home_dir() -> PathBuf {
-    if let Some(home) = std::env::var_os("USERPROFILE")
+    if let Some(home) = std::env::var_os("STARFORGE_HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
         .or_else(|| std::env::var_os("HOME"))
         .filter(|v| !v.is_empty())
     {
@@ -1683,6 +1737,73 @@ telemetry_enabled = true
     }
 
     #[test]
+    fn wallet_usage_policy_defaults_for_legacy_config_and_round_trips() {
+        let legacy: WalletEntry = toml::from_str(
+            r#"
+name = "deployer"
+public_key = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"
+network = "testnet"
+created_at = "2026-01-01T00:00:00Z"
+funded = false
+"#,
+        )
+        .unwrap();
+        assert_eq!(legacy.usage_policy, WalletUsagePolicy::default());
+
+        let policy: WalletUsagePolicy = toml::from_str(
+            r#"
+allowed_networks = ["testnet"]
+max_fee = 250000
+allowed_contracts = ["CABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVWXYZ2"]
+require_confirmation = true
+"#,
+        )
+        .unwrap();
+        assert_eq!(policy.allowed_networks, ["testnet"]);
+        assert_eq!(policy.max_fee, Some(250_000));
+        assert_eq!(policy.allowed_contracts.len(), 1);
+        assert!(policy.require_confirmation);
+    }
+
+    #[test]
+    fn wallet_usage_policy_rejects_unknown_networks_and_invalid_contracts() {
+        let mut cfg = Config::default();
+        let mut wallet = WalletEntry {
+            name: "deployer".to_string(),
+            public_key: format!("G{}", "A".repeat(55)),
+            secret_key: None,
+            network: "testnet".to_string(),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            funded: false,
+            kdf_options: None,
+            rotation_history: Vec::new(),
+            derivation_index: None,
+            derivation_path: None,
+            mnemonic_wallet: None,
+            usage_policy: WalletUsagePolicy::default(),
+        };
+        wallet
+            .usage_policy
+            .allowed_networks
+            .push("missing".to_string());
+        cfg.wallets.push(wallet);
+        assert!(validate_config(&cfg)
+            .unwrap_err()
+            .to_string()
+            .contains("allowed_networks"));
+
+        cfg.wallets[0].usage_policy.allowed_networks.clear();
+        cfg.wallets[0]
+            .usage_policy
+            .allowed_contracts
+            .push("not-a-contract".to_string());
+        assert!(validate_config(&cfg)
+            .unwrap_err()
+            .to_string()
+            .contains("allowed_contracts"));
+    }
+
+    #[test]
     fn trusted_plugin_source_management_deduplicates_and_resets() {
         let mut cfg = Config::default();
         assert!(add_trusted_plugin_source(&mut cfg, "plugins.example.com".to_string()).unwrap());
@@ -1750,6 +1871,10 @@ telemetry_enabled = true
             funded: false,
             rotation_history: Vec::new(),
             kdf_options: None,
+            derivation_index: None,
+            derivation_path: None,
+            mnemonic_wallet: None,
+            usage_policy: WalletUsagePolicy::default(),
         });
         let findings = validate_config_integrity(&cfg);
         assert!(
