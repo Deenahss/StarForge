@@ -41,6 +41,24 @@ enum Commands {
     #[command(
         about = "Contract operations (invoke, build, test, audit, upgrade, inspect, monitor)"
     )]
+    Ai,
+    #[command(about = "AI-driven performance profiling commands")]
+    AiProfile,
+    #[command(about = "AI-powered IDE integration commands")]
+    AiIde,
+    #[command(about = "AI-driven test maintenance commands")]
+    AiTestMaintain,
+    #[command(about = "AI-driven deployment testing commands")]
+    AiDeploymentTest,
+    #[command(about = "Manage test wallets (create, list, fund, show, remove)")]
+    Wallet,
+    #[command(about = "On-chain account lifecycle with sponsored reserves (CAP-33)")]
+    Account,
+    #[command(about = "Natural language command interface")]
+    Nl,
+    #[command(about = "Generate Soroban project boilerplate")]
+    New,
+    #[command(about = "Contract operations (invoke, inspect, etc.)")]
     Contract,
     #[command(about = "Deploy a compiled Soroban contract and manage the deployment lifecycle")]
     Deploy,
@@ -106,6 +124,19 @@ const INTERNAL_COMMANDS: &[&str] = &["external", "autocomplete", "man"];
 /// The renderer asserts that every parent listed here is a real top-level
 /// command, so a rename/removal fails the build instead of silently drifting.
 const MAJOR_SUBCOMMANDS: &[(&str, &[(&str, &str)])] = &[
+    (
+        "account",
+        &[
+            (
+                "create --sponsor <WALLET> --to <G...>",
+                "Create an account with sponsored reserves (CAP-33, --fee-payer, --yes)",
+            ),
+            (
+                "end-sponsorship --wallet <WALLET>",
+                "Release a sponsor's reserve (--fee-payer, --yes)",
+            ),
+        ],
+    ),
     (
         "wallet",
         &[
@@ -223,57 +254,11 @@ const MAJOR_SUBCOMMANDS: &[(&str, &[(&str, &str)])] = &[
         ],
     ),
     (
-        "template",
-        &[
-            ("list", "List marketplace templates"),
-            ("search <QUERY>", "Search templates"),
-            ("show <ID>", "Template details"),
-            ("init <ID> <DIR>", "Scaffold from template"),
-            ("publish", "Publish template metadata"),
-            ("remove <ID>", "Remove local template entry"),
-            ("vcs", "Template version control (branch, changelog)"),
-            ("registry", "Interact with the remote template registry"),
-        ],
-    ),
-    (
-        "plugin",
-        &[
-            ("install", "Install a third-party plugin"),
-            ("list", "List installed plugins"),
-            ("verify", "Verify a plugin signature"),
-            ("audit", "Audit a plugin"),
-        ],
-    ),
-    (
-        "ai",
-        &[
-            (
-                "local <status\\|models\\|pull\\|ask\\|…>",
-                "Local LLM assistant (Ollama)",
-            ),
-            ("debug", "Error analysis and fix suggestions"),
-            ("navigate", "Definitions, references, code graphs"),
-            ("gate", "Code quality, security, coverage, license gates"),
-            ("security-audit", "AI security audit of a contract"),
-            ("tests", "Generate, optimize, and analyze tests"),
-            ("test-maintain", "Keep the test suite healthy"),
-            ("deploy-test", "AI-driven deployment testing"),
-            ("property-test", "Discover properties, validate invariants"),
-            ("search", "Code search and pattern discovery"),
-            ("recommend", "Best practice recommendations"),
-            ("route", "Model selection and routing"),
-            ("plan", "Requirements, architecture, timeline, risks"),
-            ("suggest", "Context-aware contract function suggestions"),
-            ("docs", "Documentation Q&A with citations"),
-            ("profiling", "Performance profiling"),
-            ("feedback", "Record feedback, track quality"),
-            ("telemetry", "AI usage telemetry and cost"),
-            ("training", "Security training lessons and progress"),
-            ("accessibility", "Screen reader, voice, text simplification"),
-            ("ide", "Editor snippets and task providers"),
-            ("prompts", "Prompt templates and versioning"),
-            ("help", "Contextual help for commands and workflows"),
-        ],
+        "sep10",
+        &[(
+            "auth <--domain <HOME_DOMAIN>> <--wallet <NAME>>",
+            "Validate, sign, and exchange a SEP-10 challenge for a session JWT",
+        )],
     ),
     (
         "config",
@@ -420,10 +405,9 @@ const SUBCOMMAND_INFO: &[(&str, &str)] = &[
         "deploy env",
         "Manage deployment environments (dev/staging/production)",
     ),
-    (
-        "deploy schedule",
-        "Schedule deployments for future execution",
-    ),
+    ("telemetry", "Manage telemetry settings directly"),
+    ("tx", "Fetch transaction for the account"),
+    ("sep10", "SEP-10 web authentication (anchor auth testing)"),
     (
         "deploy orchestrate",
         "Multi-contract deployment orchestration",

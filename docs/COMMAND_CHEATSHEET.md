@@ -18,6 +18,7 @@ Global options: `--json`, `--quiet`/`-q`, `--log-format`, `--log-dir`, `--correl
 
 | Command | Description |
 |---|---|
+| `account` | On-chain account lifecycle with sponsored reserves (CAP-33) |
 | `advanced-perf` | Advanced contract performance analysis and profiling tools |
 | `ai` | Local LLM assistant for Soroban contracts (audit, explain, test, optimise, profile) |
 | `ai-accessibility` | AI accessibility features — screen reader, voice commands, text simplification |
@@ -82,6 +83,13 @@ Global options: `--json`, `--quiet`/`-q`, `--log-format`, `--log-dir`, `--correl
 | `template` | Manage community contract templates, versions, and the registry |
 | `tool` | Developer-environment utilities: tutorials, natural language, PR checks |
 | `wallet` | Manage test wallets (create, list, fund, sign), transactions, and devices |
+
+## `account` subcommands
+
+| Subcommand | Description |
+|---|---|
+| `create --sponsor <WALLET> --to <G...>` | Create an account with sponsored reserves (CAP-33, --fee-payer, --yes) |
+| `end-sponsorship --wallet <WALLET>` | Release a sponsor's reserve (--fee-payer, --yes) |
 
 ## `wallet` subcommands
 

@@ -94,7 +94,12 @@ enum Commands {
 
     /// Manage community contract templates, versions, and the registry
     #[command(subcommand)]
-    Template(commands::template::TemplateCommands),
+    Wallet(commands::wallet::WalletCommands),
+    /// On-chain account lifecycle with sponsored reserves (CAP-33)
+    #[command(subcommand)]
+    Account(commands::account::AccountCommands),
+    /// Natural language command interface
+    Nl(commands::nl::NlArgs),
 
     /// Manage third-party plugins
     #[command(subcommand)]
@@ -360,6 +365,10 @@ async fn run() {
         // Every handler lives in the module that owns the command; the noun
         // enums added by ADR 0007 forward to those modules unchanged.
         Commands::Wallet(cmd) => commands::wallet::handle(cmd).await,
+        Commands::Account(cmd) => commands::account::handle(cmd).await,
+        Commands::Nl(args) => commands::nl::handle(args).await,
+        Commands::New(cmd) => commands::new::handle(cmd).await,
+        Commands::Generate(cmd) => commands::generate::handle(&cmd).await,
         Commands::Contract(cmd) => commands::contract::handle(cmd).await,
         Commands::Inspect(cmd) => commands::inspect::handle(cmd).await,
         Commands::Debug(cmd) => commands::debug::handle(cmd).await,
