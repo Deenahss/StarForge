@@ -997,23 +997,18 @@ pub async fn handle(args: DeployArgs) -> Result<()> {
         .with_annotation(args.note.clone(), args.changelog.clone());
         let record_id = record_deployment(record)?;
 
-        let salt = match &args.salt {
+        let salt: [u8; 32] = match &args.salt {
             Some(hex_salt) => {
                 let bytes = hex::decode(hex_salt)
                     .map_err(|e| anyhow::anyhow!("invalid --salt hex: {e}"))?;
-                if bytes.len() != 32 {
-                    anyhow::bail!("--salt must be 32 bytes (64 hex chars), got {}", bytes.len());
-                }
-                let mut arr = [0u8; 32];
-                arr.copy_from_slice(&bytes);
-                arr
+                <[u8; 32]>::try_from(bytes.as_slice()).map_err(|_| {
+                    anyhow::anyhow!(
+                        "--salt must be 32 bytes (64 hex chars), got {}",
+                        bytes.len()
+                    )
+                })?
             }
-            None => {
-                let mut salt = [0u8; 32];
-                use rand::RngCore;
-                rand::thread_rng().fill_bytes(&mut salt);
-                salt
-            }
+            None => rand::random(),
         };
         let constructor_args = soroban_native::parse_constructor_args(&args.constructor_args)?;
 
