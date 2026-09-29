@@ -103,6 +103,20 @@ pub enum WalletCommands {
         #[arg(long)]
         json: bool,
     },
+    /// Add a watch-only wallet (public key only — cannot sign)
+    Watch {
+        /// Local alias for this address
+        name: String,
+        /// Stellar public key (G...)
+        #[arg(long)]
+        address: String,
+        /// Network to associate with this wallet
+        #[arg(long, value_parser = ["testnet", "mainnet"])]
+        network: Option<String>,
+        /// Also register the address in the per-network alias book
+        #[arg(long, default_value = "false")]
+        alias: bool,
+    },
     /// Show details of a saved wallet including live balance
     Show {
         /// Wallet name
@@ -463,6 +477,12 @@ pub async fn handle(cmd: WalletCommands) -> Result<()> {
             .await
         }
         WalletCommands::List { json } => list(json),
+        WalletCommands::Watch {
+            name,
+            address,
+            network,
+            alias,
+        } => watch_wallet(name, address, network, alias),
         WalletCommands::Show { name, reveal } => show(name, reveal).await,
         WalletCommands::Fund { name } => fund_wallet(name).await,
         WalletCommands::Remove { name } => remove(name),
@@ -870,6 +890,19 @@ fn dry_run_plan(cmd: &WalletCommands) -> Option<DryRunPlan> {
         | WalletCommands::Derive
         | WalletCommands::Multisig(MultisigCommands::List)
         | WalletCommands::Multisig(MultisigCommands::Show { .. }) => None,
+        WalletCommands::Watch { name, address, network, .. } => Some(
+            DryRunPlan::new(
+                "wallet watch",
+                format!("Add watch-only wallet '{name}'"),
+            )
+            .maybe_network(network.clone())
+            .operation(PlannedOperation::new(
+                "wallet.write",
+                name.clone(),
+                format!("would store watch-only address {address} as '{name}'"),
+            ))
+            .writes_filesystem(),
+        ),
     }
 }
 
@@ -1100,6 +1133,13 @@ fn sign_message(
         .iter()
         .find(|w| w.name == name)
         .ok_or_else(|| anyhow::anyhow!("Wallet '{}' not found", name))?;
+
+    if w.is_watch_only() {
+        anyhow::bail!(
+            "Wallet '{}' is watch-only and cannot sign. Import a secret key or use a signing wallet.",
+            name
+        );
+    }
 
     let sk = w
         .secret_key
@@ -1369,6 +1409,61 @@ async fn create(
     Ok(())
 }
 
+/// Persist a public-key-only wallet for monitoring, aliases, and multisig composition.
+fn watch_wallet(
+    name: String,
+    address: String,
+    network_override: Option<String>,
+    also_alias: bool,
+) -> Result<()> {
+    config::validate_public_key(&address)?;
+    let mut cfg = config::load()?;
+    if cfg.wallets.iter().any(|w| w.name == name) {
+        anyhow::bail!(
+            "Wallet '{}' already exists. Choose another name or remove it first.",
+            name
+        );
+    }
+    let network = network_override.unwrap_or_else(|| cfg.network.clone());
+    config::validate_network(&network)?;
+
+    let entry = config::WalletEntry {
+        name: name.clone(),
+        public_key: address.clone(),
+        secret_key: None,
+        network: network.clone(),
+        created_at: chrono::Utc::now().to_rfc3339(),
+        funded: false,
+        kdf_options: None,
+        rotation_history: Vec::new(),
+        derivation_index: None,
+        derivation_path: None,
+        mnemonic_wallet: None,
+        usage_policy: config::WalletUsagePolicy::default(),
+    };
+    cfg.wallets.push(entry);
+    config::save(&cfg)?;
+
+    if also_alias {
+        let mut book = crate::utils::aliases::AliasBook::load()
+            .map_err(|e| anyhow::anyhow!("alias book: {e}"))?;
+        book.set(&network, &name, &address)
+            .map_err(|e| anyhow::anyhow!("alias set: {e}"))?;
+        book.save()
+            .map_err(|e| anyhow::anyhow!("alias save: {e}"))?;
+    }
+
+    p::success(&format!(
+        "Watch-only wallet '{}' added ({})",
+        name.bold(),
+        "cannot sign".yellow()
+    ));
+    p::kv("Address", &address);
+    p::kv("Network", &network);
+    p::info("Use this wallet for balances, multisig members, and address books — not for signing.");
+    Ok(())
+}
+
 fn list(json: bool) -> Result<()> {
     let cfg = config::load()?;
     let emit_json = json || output::is_json_mode_enabled();
@@ -1388,6 +1483,7 @@ fn list(json: bool) -> Result<()> {
             network: String,
             funded: bool,
             created_at: String,
+            watch_only: bool,
             #[serde(skip_serializing_if = "Option::is_none")]
             derivation_index: Option<u32>,
             #[serde(skip_serializing_if = "Option::is_none")]
@@ -1405,6 +1501,7 @@ fn list(json: bool) -> Result<()> {
                 network: w.network.clone(),
                 funded: w.funded,
                 created_at: w.created_at.clone(),
+                watch_only: w.is_watch_only(),
                 derivation_index: w.derivation_index,
                 derivation_path: w.derivation_path.clone(),
                 mnemonic_wallet: w.mnemonic_wallet.clone(),
@@ -1431,7 +1528,9 @@ fn list(json: bool) -> Result<()> {
     p::separator();
 
     for (i, w) in cfg.wallets.iter().enumerate() {
-        let status = if w.funded {
+        let status = if w.is_watch_only() {
+            "watch-only".yellow()
+        } else if w.funded {
             "funded".green()
         } else {
             "unfunded".dimmed()

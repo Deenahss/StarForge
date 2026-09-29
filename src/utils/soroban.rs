@@ -102,11 +102,11 @@ pub struct ContractStorageEntry {
 }
 
 #[derive(Debug, Serialize)]
-struct SorobanRpcRequest {
-    jsonrpc: String,
-    id: u64,
-    method: String,
-    params: serde_json::Value,
+pub(crate) struct SorobanRpcRequest {
+    pub(crate) jsonrpc: String,
+    pub(crate) id: u64,
+    pub(crate) method: String,
+    pub(crate) params: serde_json::Value,
 }
 
 #[derive(Debug, Deserialize)]
@@ -418,7 +418,7 @@ pub async fn check_soroban_rpc_url(url: &str) -> bool {
     }
 }
 
-async fn rpc_request_with_url<T>(rpc_url: &str, request: SorobanRpcRequest) -> Result<T>
+pub(crate) async fn rpc_request_with_url<T>(rpc_url: &str, request: SorobanRpcRequest) -> Result<T>
 where
     T: DeserializeOwned,
 {
